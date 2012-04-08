@@ -252,7 +252,7 @@ char *addrmeth_to_string(dcpu16 *cpu,
         break;
     case NEXT_WORD_PLUS_REGISTER:
         snprintf(str, n, "[0x%04X + %s]",
-                 *ptr, val_to_registername(val));
+                 (uint16_t)(ptr - cpu->ram), val_to_registername(val));
         break;
     case POP:
         strcpy(str, "POP");

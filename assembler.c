@@ -31,16 +31,15 @@ typedef enum {
 typedef struct {
     dcpu16operandtype type;
 
-    /* TODO: "value" is a relict, should be "a" and "b". Too lazy to rename */
     uint16_t value;
-    uint16_t param;
+    uint16_t next;
 } dcpu16operand;
 
 void error(const char*, ...);
 void display_help();
 void read_file(FILE*, char***);
 void strip_comments(char**);
-void parse(char**);
+uint16_t assemble(char**, uint16_t**);
 int read_operand(char**, int, const char*);
 dcpu16opcode parse_opcode(const char*);
 void parse_operand(char*, dcpu16operand*);
@@ -64,6 +63,8 @@ int main(int argc, char **argv) {
     FILE *input = stdin;
     FILE *output = NULL;
     char **file_contents = NULL;
+    uint16_t *program = NULL;
+    uint16_t programlen = 0;
 
     static struct option lopts[] = {
         {"littleendian", no_argument, NULL, 'l'},
@@ -128,10 +129,19 @@ int main(int argc, char **argv) {
         printf("% 3d  %s",  i+1, file_contents[i]);
     }
 
-    parse(file_contents);
+    programlen = assemble(file_contents, &program);
 
+    if (flag_littleendian == 1) {
+        for (i = 0; i < programlen; ++i) {
+            program[i] = ((program[i] & 0x00FF) << 8) | ((program[i] & 0xFF00) >> 8);
+        }
+    }
+
+    fwrite(program, sizeof(uint16_t), programlen, output);
 
     /* Release resources */
+    free(program);
+
     for (i = 0;; ++i) {
         if (file_contents[i] == NULL)
             break;
@@ -206,8 +216,137 @@ void strip_comments(char **lines) {
     }
 }
 
-void parse(char **lines) {
+int is_basic_instruction(dcpu16opcode op) {
+    return op != JSR;
+}
+
+uint16_t encode_opcode(dcpu16opcode op) {
+    if (is_basic_instruction(op)) {
+        switch (op) {
+        case SET: return 0x1;
+        case ADD: return 0x2;
+        case SUB: return 0x3;
+        case MUL: return 0x4;
+        case DIV: return 0x5;
+        case MOD: return 0x6;
+        case SHL: return 0x7;
+        case SHR: return 0x8;
+        case AND: return 0x9;
+        case BOR: return 0xA;
+        case XOR: return 0xB;
+        case IFE: return 0xC;
+        case IFN: return 0xD;
+        case IFG: return 0xE;
+        case IFB: return 0xF;
+        default: break;
+        }
+    } else {
+        switch (op) {
+        case JSR: return 0x0 | (0x1 << 4);
+        default: break;
+        }
+    }
+
+    return 0xFFFF;
+}
+
+uint16_t encode_value(dcpu16operand *op, uint16_t *w, int shift) {
+    uint16_t bv; /* base value */
+
+    switch (op->type) {
+    case REGISTER:
+        bv = op->value;
+        break;
+
+    case REGISTER_INDIRECT:
+        /* Indirect register = registernum + 8 */
+        bv = op->value + 0x8;
+        break;
+
+    case REGISTER_PLUS_LITERAL:
+        /* Likewise, with + 16 */
+        bv = op->value + 0x10;
+        *w = op->next;
+        break;
+
+    case POP:
+        bv = 0x18;
+        break;
+
+    case PEEK:
+        bv = 0x19;
+        break;
+
+    case PUSH:
+        bv = 0x1A;
+        break;
+
+    case SP:
+        bv = 0x1B;
+        break;
+
+    case PC:
+        bv = 0x1C;
+        break;
+
+    case O:
+        bv = 0x1D;
+        break;
+
+    case LITERAL:
+        /* If the literal value is smaller than 32 (0x20) we can encode it
+         * in the same word */
+        if (op->value < 0x20) {
+            bv = 0x20 + op->value;
+        } else {
+            bv = 0x1f; /* 0x1f = literal is in the next word */
+            *w = op->value;
+        }
+
+        break;
+
+    case LITERAL_INDIRECT:
+        /* Literal references are always in the next word, no matter how
+         * small */
+        bv = 0x1e;
+        *w = op->value;
+        break;
+
+    default: break;
+    }
+
+    return bv << shift;
+}
+
+void encode(dcpu16opcode op, dcpu16operand *a, dcpu16operand *b,
+               uint16_t *instr, uint16_t *wa, uint16_t *wb) {
+    if (is_basic_instruction(op))
+        *instr = encode_opcode(op)
+               | encode_value(a, wa, 4)
+               | encode_value(b, wb, 10);
+    else
+        *instr = encode_opcode(op)
+               | encode_value(a, wa, 10);
+}
+
+int has_next(dcpu16operand *op) {
+    switch (op->type) {
+    case REGISTER_PLUS_LITERAL:
+    case LITERAL_INDIRECT: return 1;
+    case LITERAL: return (op->value > 0x1f);
+    default: return 0;
+    }
+}
+
+int get_instruction_length(dcpu16operand *a, dcpu16operand *b) {
+    return has_next(a) + has_next(b);
+}
+
+uint16_t assemble(char **lines, uint16_t **program) {
     int i;
+    uint16_t programlength = 0;
+    uint16_t instr, worda, wordb;
+    uint8_t instrlen = 0, words;
 
     for (i = 0;; ++i) {
         char *start = lines[i];
@@ -235,15 +374,39 @@ void parse(char **lines) {
         }
 
 
-        /* get a and b */
-        read_operand(&a, i+1, ",");
-        parse_operand(a, &opa);
+        /* get a and possibly b */
+        if (is_basic_instruction(opcode)) {
+            read_operand(&a, i+1, ",");
+            parse_operand(a, &opa);
 
-        read_operand(&b, i+1, "\n");
-        parse_operand(b, &opb);
+            read_operand(&b, i+1, "\n");
+            parse_operand(b, &opb);
 
-        printf("%s\t%s,\t%s\n", start, a, b);
+            printf("%s\t%s,\t%s\n", start, a, b);
+        } else {
+            read_operand(&a, i+1, "\n");
+            parse_operand(a, &opb);
+
+            printf("%s\t%s\n", start, a);
+        }
+
+        encode(opcode, &opa, &opb, &instr, &worda, &wordb);
+        words = 1 + get_instruction_length(&opa, &opb);
+
+        printf("Writing %d words\n", words);
+
+        *program = realloc(*program, (instrlen + words) * 2);
+        (*program)[instrlen++] = instr;
+
+        if (has_next(&opa))
+            (*program)[instrlen++] = worda;
+
+        if (has_next(&opb))
+            (*program)[instrlen++] = wordb;
+        
     }
+
+    return instrlen;
 }
 
 int read_operand(char **src, int lineno, const char *sep) {
@@ -387,7 +550,9 @@ void parse_operand(char *op, dcpu16operand *store) {
 
             store->type = REGISTER_PLUS_LITERAL;
             store->value = reg;
-            store->param = num;
+            store->next = num;
+
+            printf("Numeric = %04X\n", num);
         } else {
             /* [Literal], [Register] */
             if (isalpha(*op)) {
