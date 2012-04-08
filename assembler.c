@@ -43,7 +43,7 @@ void strip_comments(char**);
 void parse(char**);
 int read_operand(char**, int, const char*);
 dcpu16opcode parse_opcode(const char*);
-void parse_operand(const char*, dcpu16operand*);
+void parse_operand(char*, dcpu16operand*);
 
 
 char *srcfile = "<stdin>";
@@ -259,7 +259,7 @@ int read_operand(char **src, int lineno, const char *sep) {
     }
 
 error:
-    error("Expected OPERAND, got '%s'", *src);
+    error("Expected operand, got '%s'", *src);
     return 1;
 }
 
@@ -278,13 +278,13 @@ uint16_t read_numeric(const char *op) {
         /* Since normal numbers don't begin with a zero */
         sscanf(op, "%d", (int *)&num);
     } else {
-        error("Expected NUMERIC, got '%s'", op);
+        error("Expected numeric, got '%s'", op);
     }
 
     return num;
 }
 
-uint8_t parse_register(const char **reg) {
+uint8_t parse_register(char **reg) {
     while (isspace(**reg))
         (*reg)++;
 
@@ -297,14 +297,16 @@ uint8_t parse_register(const char **reg) {
     case 'Z': (*reg)++; return 0x5;
     case 'I': (*reg)++; return 0x6;
     case 'J': (*reg)++; return 0x7;
-    default: error("Expected REGISTER, got '%s'", *reg);
+    default:
+        error("Expected 'A', 'B', 'C', 'X', 'Y', 'Z', 'I' or 'J', got '%c'",
+               **reg);
     }
 
     /* Since this can't happen, just make the compiler shut up */
     return 0xFF;
 }
 
-void parse_operand(const char *op, dcpu16operand *store) {
+void parse_operand(char *op, dcpu16operand *store) {
     /* Start of with the simple things */
     if (!strncasecmp(op, "POP", 3)) {
         store->type = POP;
@@ -327,8 +329,18 @@ void parse_operand(const char *op, dcpu16operand *store) {
         store->type = LITERAL;
         store->value = num;
     } else if (*op == '[') {
+        char *end = op + strlen(op) - 1;
         /* Anything indirect */
         op++;
+
+        /* Check for matching ']' */
+        while (isspace(*end))
+            --end;
+        
+        if (*end != ']')
+            error("Unclosed '[', got '%c' instead", *end);
+ 
+        *(++end) = '\0';
 
         while (isspace(*op))
             op++;
@@ -353,12 +365,9 @@ void parse_operand(const char *op, dcpu16operand *store) {
                 store->type = REGISTER_PLUS_LITERAL;
                 store->value = register_base;
                 store->param = n;
-
-                while (isspace(*op))
+    
+                while (isdigit(*op) || (*op == 'x') || isspace(*op))
                     op++;
-
-                if (*op != ']')
-                    error("Expected ']', got '%s'", op);
             } else if (*op == ']') {
                 /* [Register] */
 
@@ -382,13 +391,6 @@ void parse_operand(const char *op, dcpu16operand *store) {
                 store->type = REGISTER_PLUS_LITERAL;
                 store->value = register_base;
                 store->param = n;
-
-                while (isspace(*op))
-                    op++;
-
-                if (*op != ']')
-                    error("Expected ']', got '%s'", op);
-
             } else if (*op == ']') {
                 /* [Literal] */
 
@@ -399,9 +401,10 @@ void parse_operand(const char *op, dcpu16operand *store) {
             }
         }
 
-        while (isspace(*(++op)));
+        while (isspace(*op))
+            op++;
 
-        if (strlen(op) != 0)
+        if (strlen(op) != 1)
             error("Expected ',' or EOL, got '%s'", op);
 
     } else {
