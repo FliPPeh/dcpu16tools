@@ -263,23 +263,26 @@ error:
     return 1;
 }
 
-uint16_t read_numeric(const char *op) {
+uint16_t read_numeric(char **op) {
     unsigned int num;
 
-    while (isspace(*op))
-        op++;
+    while (isspace(**op))
+        (*op)++;
 
-    if (!strncmp(op, "0x", 2)) {
+    if (!strncmp(*op, "0x", 2)) {
         /* Read hex digit */
-        op += 2; /* Skip "0x" */
+        *op += 2; /* Skip "0x" */
 
-        sscanf(op, "%x", (unsigned int *)&num);
-    } else if ((isdigit(*op)) && (*op != '0')) {
+        sscanf(*op, "%x", (unsigned int *)&num);
+    } else if ((isdigit(**op)) && (**op != '0')) {
         /* Since normal numbers don't begin with a zero */
-        sscanf(op, "%d", (int *)&num);
+        sscanf(*op, "%d", (int *)&num);
     } else {
-        error("Expected numeric, got '%s'", op);
+        error("Expected numeric, got '%s'", *op);
     }
+
+    while (isdigit(**op) || (**op == 'x'))
+        (*op)++;
 
     return num;
 }
@@ -325,11 +328,12 @@ void parse_operand(char *op, dcpu16operand *store) {
         store->type = REGISTER;
         store->value = parse_register(&op);
     } else if (isdigit(*op)) {
-        uint16_t num = read_numeric(op);
+        uint16_t num = read_numeric(&op);
         store->type = LITERAL;
         store->value = num;
     } else if (*op == '[') {
         char *end = op + strlen(op) - 1;
+        char *plus = NULL;
         /* Anything indirect */
         op++;
 
@@ -346,59 +350,63 @@ void parse_operand(char *op, dcpu16operand *store) {
             op++;
 
         /*
-         * [Register + Literal], [Literal + Register], [Register], [Literal]
-         *
-         * TODO: Strip '[' and ']' after checking balance - prettier errors
+         * "[A + B]" is now "A + B]" with no trailing or leading whitespace
          */
-        if (isalpha(*op)) {
-            /* [Register + Literal], [Register] */
-            uint8_t register_base = parse_register(&op);
+        if ((plus = strstr(op, "+")) != NULL) {
+            uint16_t num = 0;
+            uint8_t reg  = 0;
+
+            /* Move pointer behind the '+' */
+            plus++;
+
+            /* [Literal], [Register] */
+            if (isalpha(*op)) {
+                /* [Register + Literal] */
+                reg = parse_register(&op);
+                num = read_numeric(&plus);
+            } else if (isdigit(*op)) {
+                /* [Literal + Register] */
+                reg = parse_register(&plus);
+                num = read_numeric(&op);
+            } else {
+                error("Expected register or literal, got '%s'", op);
+            }
+
+            while (isspace(*op))
+                op++;
+            while (isspace(*plus))
+                plus++;
+
+            if (*op != '+')
+                error("Expected '+', got '%c'", *op);
+
+            if (*plus != ']')
+                error("Expected ']', got '%c'", *plus);
+
+            op = plus;
+
+            store->type = REGISTER_PLUS_LITERAL;
+            store->value = reg;
+            store->param = num;
+        } else {
+            /* [Literal], [Register] */
+            if (isalpha(*op)) {
+                /* [Register] */
+                store->type = REGISTER_INDIRECT;
+                store->value = parse_register(&op);
+            } else if (isdigit(*op)) {
+                /* [Literal] */
+                store->type = LITERAL_INDIRECT;
+                store->value = read_numeric(&op);
+            } else {
+                error("Expected register or literal, got '%c'", op);
+            }
 
             while (isspace(*op))
                 op++;
 
-            if (*op == '+') {
-                /* [Register + Literal] */
-                op++;
-                uint16_t n = read_numeric(op);
-
-                store->type = REGISTER_PLUS_LITERAL;
-                store->value = register_base;
-                store->param = n;
-    
-                while (isdigit(*op) || (*op == 'x') || isspace(*op))
-                    op++;
-            } else if (*op == ']') {
-                /* [Register] */
-
-                store->type = REGISTER_INDIRECT;
-                store->value = register_base;
-            } else {
-                error("Expected '+' or ']', got '%s'", op);
-            }
-        } else if (isdigit(*op)) {
-            /* [Literal + Register], [Literal] */
-            uint16_t n = read_numeric(op);
-
-            while (isdigit(*op) || (*op == 'x') || isspace(*op))
-                op++;
-
-            if (*op == '+') {
-                /* [Literal + Register] */
-                op++;
-                uint8_t register_base = parse_register(&op);
-
-                store->type = REGISTER_PLUS_LITERAL;
-                store->value = register_base;
-                store->param = n;
-            } else if (*op == ']') {
-                /* [Literal] */
-
-                store->type = LITERAL_INDIRECT;
-                store->value = n;
-            } else {
-                error("Expected '+' or ']', got '%s'", op);
-            }
+            if (*op != ']')
+                error("Expected ']', got '%c'", *op);
         }
 
         while (isspace(*op))
