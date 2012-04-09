@@ -27,7 +27,7 @@ typedef enum {
                              *   >0x1f      = next word
                              */
     LITERAL_INDIRECT,       /* [0xXXXX] */
-    LABEL
+    LABEL, LABEL_INDIRECT
 } dcpu16operandtype;
 
 typedef struct {
@@ -73,6 +73,8 @@ static int flag_littleendian = 0;
 /*
  * TODO: 
  *   Data sections (dat)
+ *     - :data dat "str", 0xXXXXXX, "str2"
+ *     - Write the data at that position (data-> beginning of data, dat = macro)
  *   Maybe build a real tokenizer
  */
 int main(int argc, char **argv) {
@@ -204,17 +206,17 @@ void replace_labels(list *instr, list *lbls) {
     while (node != NULL) {
         dcpu16instruction *ptr = node->data;
         
-        if (ptr->a.type == LABEL) {
+        if ((ptr->a.type == LABEL) || (ptr->a.type == LABEL_INDIRECT)) {
             uint16_t pc = get_label_position(lbls, ptr->a.label);
 
-            ptr->a.type = LITERAL;
+            ptr->a.type = ptr->a.type == LABEL ? LITERAL : LITERAL_INDIRECT;
             ptr->a.value = pc;
         }
 
-        if (ptr->b.type == LABEL) {
+        if ((ptr->b.type == LABEL) || (ptr->b.type == LABEL_INDIRECT)) {
             uint16_t pc = get_label_position(lbls, ptr->b.label);
 
-            ptr->b.type = LITERAL;
+            ptr->b.type = ptr->b.type == LABEL ? LITERAL : LITERAL_INDIRECT;
             ptr->b.value = pc;
         }
 
@@ -607,7 +609,7 @@ void parse_operand(char *op, dcpu16operand *store) {
         if (*end != ']')
             error("Unclosed '[', got '%c' instead", *end);
  
-        *(++end) = '\0';
+        *(end) = '\0';
 
         while (isspace(*op))
             op++;
@@ -643,22 +645,25 @@ void parse_operand(char *op, dcpu16operand *store) {
             if (*op != '+')
                 error("Expected '+', got '%c'", *op);
 
-            if (*plus != ']')
-                error("Expected ']', got '%c'", *plus);
-
             op = plus;
 
             store->type = REGISTER_PLUS_LITERAL;
             store->value = reg;
             store->next = num;
-
-            printf("Numeric = %04X\n", num);
         } else {
             /* [Literal], [Register] */
             if (isalpha(*op)) {
                 /* [Register] */
-                store->type = REGISTER_INDIRECT;
-                store->value = parse_register(&op);
+                printf("%s\n", op);
+                if (strlen(op) > 1) {
+                    store->type = LABEL_INDIRECT;
+                    strncpy(store->label, op, sizeof(store->label) - 1);
+
+                    op += strlen(op);
+                } else {
+                    store->type = REGISTER_INDIRECT;
+                    store->value = parse_register(&op);
+                }
             } else if (isdigit(*op)) {
                 /* [Literal] */
                 store->type = LITERAL_INDIRECT;
@@ -666,18 +671,12 @@ void parse_operand(char *op, dcpu16operand *store) {
             } else {
                 error("Expected register or literal, got '%c'", op);
             }
-
-            while (isspace(*op))
-                op++;
-
-            if (*op != ']')
-                error("Expected ']', got '%c'", *op);
         }
 
         while (isspace(*op))
             op++;
 
-        if (strlen(op) != 1)
+        if (strlen(op) != 0)
             error("Expected ',' or EOL, got '%s'", op);
 
     } else {
