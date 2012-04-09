@@ -8,69 +8,52 @@
 
 #include "linked_list.h"
 
+/*
+ * Tokens
+ */
 typedef enum {
-    INV,
-    JSR, SET, ADD, SUB,
-    MUL, DIV, MOD, SHL,
-    SHR, AND, BOR, XOR,
-    IFE, IFN, IFG, IFB
-} dcpu16opcode;
+    T_STRING, /* Any string */
+    T_NUMBER, /* Any number */
+    T_LBRACK, /* '[' */
+    T_RBRACK, /* ']' */
+    T_COMMA,  /* ',' */
+    T_COLON,  /* ':' */
+    T_PLUS,   /* '+' */
+    T_A, T_B, T_C, T_X, T_Y, T_Z, T_I, T_J, /* Registers */
+    T_POP, T_PEEK, T_PUSH, /* POP, PEEK, PUSH */
+    T_OP, T_PC, T_O, T_SP,
+    T_SET, T_ADD, T_SUB, T_MUL, T_DIV, T_MOD, T_SHL, T_SHR,
+    T_AND, T_BOR, T_XOR, T_IFE, T_IFN, T_IFG, T_IFB, T_JSR,
+    T_NEWLINE
+} dcpu16token;
 
-typedef enum {
-    IMMEDIATE,
-    RAMLOCATION
-} dcpu16addresstype;
+static char *cur_pos;
+static int line_start;
 
-typedef enum {
-    REGISTER,               /*  A, [A] */
-    REGISTER_PLUS_LITERAL,  /* [0xXXXX + A] & [A + 0xXXXX] */
-    POP, PEEK, PUSH, SP, PC, O,
-    LITERAL,                /* 
-                             * 0x0 - 0xFFFF, [0x0] - [0xFFFF]
-                             *   0x0 - 0x1f = 0x20 + literal
-                             *   >0x1f      = next word
-                             */
-    LABEL                   /* foo, [foo] */
-} dcpu16operandtype;
+union {
+    char string[256];
+    uint16_t number;
+} cur_tok;
 
 typedef struct {
-    dcpu16addresstype addressing;
-    dcpu16operandtype type;
-
-    uint16_t value;
-
-    /* If we know there's a next word, this will be it */
-    uint16_t next;
-    char label[512];
-} dcpu16operand;
-
-typedef struct {
-    dcpu16opcode opcode;
-    dcpu16operand a;
-    dcpu16operand b;
-} dcpu16instruction;
-
-typedef struct {
-    char label[512];
+    char label[256];
     uint16_t pc;
 } dcpu16label;
 
 void error(const char*, ...);
 
 void display_help();
-void read_file(FILE*, list*);
 void strip_comments(list*);
-uint16_t parse(list*, list*, list*);
 void replace_labels(list*, list*);
-void write_bin(list*, FILE*);
-void encode(dcpu16opcode, dcpu16operand*, dcpu16operand*,
-            uint16_t*, uint16_t*, uint16_t*);
-int has_next(dcpu16operand*);
 
+void read_file(FILE*, list*);
 int read_operand(char**, const char*);
-dcpu16opcode parse_opcode(const char*);
-void parse_operand(char*, dcpu16operand*);
 
+int parse(list*);
+void parse_operand(char*);
+dcpu16token next_token();
+
+void write_bin(list*, FILE*);
 
 char *srcfile = "<stdin>";
 int curline = 0;
@@ -92,8 +75,6 @@ int main(int argc, char **argv) {
     FILE *output = NULL;
 
     list *file_contents = list_create();
-
-    list *instructions = list_create();
     list *labels = list_create();
 
     static struct option lopts[] = {
@@ -148,17 +129,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Read and cleanup */
     read_file(input, file_contents);
     strip_comments(file_contents);
 
     /* Parse the file, storing labels and instructions as we go */
-    parse(file_contents, instructions, labels);
+    parse(file_contents);
+
     curline = -1;
-    replace_labels(instructions, labels);
-    write_bin(instructions, output);
 
     /* Release resources */
-    list_dispose(&instructions, &free);
     list_dispose(&labels, &free);
     list_dispose(&file_contents, &free);
 
@@ -168,26 +148,6 @@ int main(int argc, char **argv) {
     fclose(output);
 
     return 0;
-}
-
-void write_bin(list *instructions, FILE *output) {
-    list_node *node;
-
-    for (node = list_get_root(instructions); node != NULL; node = node->next) {
-        dcpu16instruction *instr = node->data;
-        uint16_t w_instr, w_a, w_b;
-
-        encode(instr->opcode, &(instr->a), &(instr->b), &w_instr, &w_a, &w_b);
-
-        fwrite(&w_instr, sizeof(uint16_t), 1, output);
-
-        if (has_next(&(instr->a)))
-            fwrite(&w_a, sizeof(uint16_t), 1, output);
-
-        if (has_next(&(instr->b)))
-            fwrite(&w_b, sizeof(uint16_t), 1, output);
-
-    }
 }
 
 uint16_t get_label_position(list *lbls, const char *lbl) {
@@ -204,30 +164,6 @@ uint16_t get_label_position(list *lbls, const char *lbl) {
 
     error("Unresolved label '%s'\n", lbl);
     return 0xFFFF;
-}
-
-void replace_labels(list *instr, list *lbls) {
-    list_node *node = list_get_root(instr);
-
-    while (node != NULL) {
-        dcpu16instruction *ptr = node->data;
-        
-        if (ptr->a.type == LABEL) {
-            uint16_t pc = get_label_position(lbls, ptr->a.label);
-
-            ptr->a.type = LITERAL;
-            ptr->a.value = pc;
-        }
-
-        if (ptr->b.type == LABEL) {
-            uint16_t pc = get_label_position(lbls, ptr->b.label);
-
-            ptr->b.type = LITERAL;
-            ptr->b.value = pc;
-        }
-
-        node = node->next;
-    }
 }
 
 void error(const char *fmt, ...) {
@@ -281,431 +217,294 @@ void strip_comments(list *lines) {
     }
 }
 
-int is_basic_instruction(dcpu16opcode op) {
-    return op != JSR;
-}
+char *toktostr(dcpu16token t) {
+    switch (t) {
+        case T_A: case T_B: case T_C:
+        case T_X: case T_Y: case T_Z:
+        case T_I: case T_J:
+            return "register";
+        case T_STRING:
+            return "label";
+        case T_NUMBER:
+            return "numeric";
+        case T_LBRACK:
+            return "'['";
+        case T_RBRACK:
+            return "']'";
+        case T_COLON:
+            return "':'";
+        case T_COMMA:
+            return "','";
 
-uint16_t encode_opcode(dcpu16opcode op) {
-    if (is_basic_instruction(op)) {
-        switch (op) {
-        case SET: return 0x1;
-        case ADD: return 0x2;
-        case SUB: return 0x3;
-        case MUL: return 0x4;
-        case DIV: return 0x5;
-        case MOD: return 0x6;
-        case SHL: return 0x7;
-        case SHR: return 0x8;
-        case AND: return 0x9;
-        case BOR: return 0xA;
-        case XOR: return 0xB;
-        case IFE: return 0xC;
-        case IFN: return 0xD;
-        case IFG: return 0xE;
-        case IFB: return 0xF;
-        default: break;
-        }
-    } else {
-        switch (op) {
-        case JSR: return 0x0 | (0x1 << 4);
-        default: break;
-        }
+        default:
+            return "unknown";
     }
-
-    return 0xFFFF;
 }
 
-uint16_t encode_value(dcpu16operand *op, uint16_t *w, int shift) {
-    uint16_t bv; /* base value */
-
-    switch (op->type) {
-    case REGISTER:
-        if (op->addressing == IMMEDIATE)
-            bv = op->value;
-        else
-            bv = op->value + 0x8;
-
-        break;
-
-    case REGISTER_PLUS_LITERAL:
-        /* Likewise, with + 16 */
-        bv = op->value + 0x10;
-        *w = op->next;
-        break;
-
-    case POP:
-        bv = 0x18;
-        break;
-
-    case PEEK:
-        bv = 0x19;
-        break;
-
-    case PUSH:
-        bv = 0x1A;
-        break;
-
-    case SP:
-        bv = 0x1B;
-        break;
-
-    case PC:
-        bv = 0x1C;
-        break;
-
-    case O:
-        bv = 0x1D;
-        break;
-
-    case LABEL:
-        error("Tried to assemble an unresolved label");
-        break;
-
-    case LITERAL:
-        if (op->addressing == IMMEDIATE) {
-            /* If the literal value is smaller than 32 (0x20) we can encode it
-             * in the same word */
-            if (op->value < 0x20) {
-                bv = 0x20 + op->value;
-            } else {
-                bv = 0x1f; /* 0x1f = literal is in the next word */
-                *w = op->value;
-            }
-        } else {
-            /* Literal references are always in the next word, no matter how
-             * small */
-            bv = 0x1e;
-            *w = op->value;
-        }
-
-        break;
-
-    default: break;
-    }
-
-    return bv << shift;
-}
-
-void encode(dcpu16opcode op, dcpu16operand *a, dcpu16operand *b,
-               uint16_t *instr, uint16_t *wa, uint16_t *wb) {
-    if (is_basic_instruction(op))
-        *instr = encode_opcode(op)
-               | encode_value(a, wa, 4)
-               | encode_value(b, wb, 10);
-    else
-        *instr = encode_opcode(op)
-               | encode_value(a, wa, 10);
-}
-
-int has_next(dcpu16operand *op) {
-    switch (op->type) {
-    case REGISTER_PLUS_LITERAL:
-    case LITERAL:
-        return ((op->value > 0x1f) || (op->addressing == RAMLOCATION));
-
+int is_instruction(dcpu16token t) {
+    switch (t) {
+    case T_SET: case T_ADD: case T_SUB: case T_MUL:
+    case T_DIV: case T_MOD: case T_SHL: case T_SHR:
+    case T_AND: case T_BOR: case T_XOR: case T_IFE:
+    case T_IFN: case T_IFG: case T_IFB: case T_JSR: return 1;
     default: return 0;
     }
 }
 
-int get_instruction_length(dcpu16operand *a, dcpu16operand *b) {
-    return 1 + has_next(a) + (b ? has_next(b) : 0);
+int is_nonbasic_instruction(dcpu16token t) {
+    return is_instruction(t) && (t == T_JSR);
 }
 
-uint16_t parse(list *lines, list *instructions, list *labels) {
+int is_register(dcpu16token t) {
+    switch (t) {
+    case T_A: case T_B: case T_C:
+    case T_X: case T_Y: case T_Z:
+    case T_I: case T_J:
+    case T_POP: case T_PEEK: case T_PUSH:
+    case T_OP: case T_PC: case T_O: case T_SP:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+void assemble_operand() {
+    dcpu16token tok;
+
+    if ((tok = next_token()) == T_STRING) {
+        /* label */
+    } else if (tok == T_NUMBER) {
+        /* numeric */
+    } else if (is_register(tok)) {
+        /* register */
+    } else if (tok == T_LBRACK) {
+        dcpu16token a = next_token();
+        /* [reference] */
+        if (a == T_NUMBER) {
+            /* [numeric] */
+        } else if (is_register(a)) {
+            /* [register] */
+        } else if (a == T_STRING) {
+            /* [label] */
+        } else {
+            error("Expected numeric, register or label, got %s", toktostr(a));
+        }
+
+        /* First part parsed correctly so far, now either ']' or '+'
+         * follows */
+        if (((tok = next_token()) != T_RBRACK) && (tok != T_PLUS))
+            error("Expected '+' or ']', got %s", toktostr(tok));
+
+        if (tok == T_RBRACK) {
+            /* [numeric], [register], [label] checks out */
+            return;
+        } else {
+            dcpu16token b = next_token();
+
+            if (is_register(a)) {
+                /* [register + label], [register + numeric] */
+                if (b == T_STRING) {
+
+                } else if (b == T_NUMBER) {
+
+                } else {
+                    error("Expected numeric or label, got %s", toktostr(b));
+                }
+            } else {
+                /* [numeric + register], [label + register] */
+                if (is_register(b)) {
+
+                } else  {
+                    error("Expected register, got %s", toktostr(b));
+                }
+            }
+
+            if (next_token() != T_RBRACK)
+                error("Expected ']'");
+        }
+    }
+}
+
+void assemble_line() {
+start:
+    ;;
+    dcpu16token tok = next_token();
+
+    if (tok == T_COLON) {
+        /* Label definition */
+        if ((tok = next_token()) == T_STRING) {
+            printf("Label: %s\n", cur_tok.string);
+
+            goto start;
+        } else {
+            error("Expected string, got %s", toktostr(tok));
+        }
+    } else if (is_instruction(tok)) {
+        dcpu16token instructions = tok;
+
+        assemble_operand();
+
+        if (!is_nonbasic_instruction(tok)) {
+            if ((tok = next_token()) == T_COMMA) {
+                assemble_operand();
+            } else {
+                error("Expected ',', got %s", toktostr(tok));
+            }
+        }
+
+        if ((tok = next_token()) != T_NEWLINE)
+            error("Expected EOL, got %s", toktostr(tok));
+
+    } else if (tok == T_NEWLINE) {
+        /* Nothing to do */
+    } else {
+        error("Expected label-definition or opcode, got %s", toktostr(tok));
+    }
+}
+
+int parse(list *lines) {
     list_node *n;
     uint16_t instrlen = 0;
 
     for (n = list_get_root(lines); n != NULL; n = n->next) {
         char *start = n->data;
-        char *token = NULL;
-        char *a = NULL, *b = NULL;
+        cur_pos = start;
+        curline++;
 
-        dcpu16opcode opcode = INV;
-        dcpu16operand opa = {0}, opb = {0};
+        line_start = 1;
 
-        ++curline;
-
-        if (start == NULL)
-            break;
-
-        if ((start = strtok(start, "\n")) == NULL)
-            continue;
-        
-        /* Skip any leading spaces */
-        while (isspace(*start))
-            start++;
-
-        /* Anything left? */
-        if (strlen(start) == 0)
-            continue;
-
-        /* Get the first word of the line */
-        token = strtok(start, " \t");
-        if (token != NULL) {
-            char *next = NULL;
-
-            /* Check if we've got a label */
-            if (*token == ':') {
-                dcpu16label *label = malloc(sizeof(dcpu16label));
-                token++;
-
-                strncpy(label->label, token, sizeof(label->label) - 1);
-                label->pc = instrlen;
-
-                list_push_back(labels, label);
-
-                next = strtok(NULL, " \t");
-                start = next;
-            } else {
-                next = token;
-            }
-
-            /* Check if there is something after the label */
-            if (next != NULL) {
-                if ((opcode = parse_opcode(next)) == INV) {
-                    error("Expected opcode, got '%s'", next);
-                }
-            } else {
-                /* Job is done, only this label on this line */
-                continue;
-            }
-        } else {
-            error("Expected opcode or label, got '%s'", start);
-        }
-
-        /* get a and possibly b */
-        if (is_basic_instruction(opcode)) {
-            dcpu16instruction *instr = malloc(sizeof(dcpu16instruction));
-
-            read_operand(&a, ",");
-            parse_operand(a, &opa);
-
-            read_operand(&b, "\n");
-            parse_operand(b, &opb);
-
-            instr->opcode = opcode;
-            instr->a = opa;
-            instr->b = opb;
-
-            instrlen += get_instruction_length(&opa, &opb);
-
-            list_push_back(instructions, instr);
-        } else {
-            dcpu16instruction *instr = malloc(sizeof(dcpu16instruction));
-
-            read_operand(&a, "\n");
-            parse_operand(a, &opa);
-
-            instr->opcode = opcode;
-            instr->a = opa;
-
-            instrlen += get_instruction_length(&opa, NULL);
-
-            list_push_back(instructions, instr);
-        }
+        assemble_line();        
     }
 
     return instrlen;
 }
 
-int read_operand(char **src, const char *sep) {
-    if ((*src = strtok(NULL, sep)) != NULL) {
-        while (isspace(**src))
-            (*src)++;
-
-        if (strlen(*src) == 0) {
-            goto error;
-        }
-
-        return 0;
-    }
-
-error:
-    if (*src != NULL)
-        error("Expected operand, got '%s'", *src);
-    else
-        error("Expected operand, got nothing");
-
-    return 1;
-}
-
-uint16_t read_numeric(char **op) {
+uint16_t read_numeric(char *op) {
     unsigned int num;
 
-    while (isspace(**op))
-        (*op)++;
-
-    if (!strncmp(*op, "0x", 2)) {
-        /* Read hex digit */
-        *op += 2; /* Skip "0x" */
-
-        sscanf(*op, "%x", (unsigned int *)&num);
-    } else if ((isdigit(**op)) && (**op != '0')) {
+    if (!strncmp(op, "0x", 2)) {
+        sscanf(op, "0x%x", (unsigned int *)&num);
+    } else if ((isdigit(*op)) && (*op != '0')) {
         /* Since normal numbers don't begin with a zero */
-        sscanf(*op, "%d", (int *)&num);
+        sscanf(op, "%d", (int *)&num);
     } else {
-        error("Expected numeric, got '%s'", *op);
+        error("Expected numeric, got '%s'", op);
     }
-
-    while (isdigit(**op) || (**op == 'x'))
-        (*op)++;
 
     return num;
 }
 
-uint8_t parse_register(char **reg) {
-    while (isspace(**reg))
-        (*reg)++;
-
-    switch (toupper(**reg)) {
-    case 'A': (*reg)++; return 0x0;
-    case 'B': (*reg)++; return 0x1;
-    case 'C': (*reg)++; return 0x2;
-    case 'X': (*reg)++; return 0x3;
-    case 'Y': (*reg)++; return 0x4;
-    case 'Z': (*reg)++; return 0x5;
-    case 'I': (*reg)++; return 0x6;
-    case 'J': (*reg)++; return 0x7;
+uint8_t parse_register(char reg) {
+    switch (toupper(reg)) {
+    case 'A': return T_A;
+    case 'B': return T_B;
+    case 'C': return T_C;
+    case 'X': return T_X;
+    case 'Y': return T_Y;
+    case 'Z': return T_Z;
+    case 'I': return T_I;
+    case 'J': return T_J;
     default:
-        error("Expected 'A', 'B', 'C', 'X', 'Y', 'Z', 'I' or 'J', got '%s'",
-               *reg);
+        error("Expected 'A', 'B', 'C', 'X', 'Y', 'Z', 'I' or 'J', got '%c'",
+                reg);
     }
 
     /* Since this can't happen, just make the compiler shut up */
     return 0xFF;
 }
 
-void parse_operand(char *op, dcpu16operand *store) {
-    /* Start of with the simple things */
-    if (!strncasecmp(op, "POP", 3)) {
-        store->type = POP;
-    } else if (!strncasecmp(op, "PEEK", 4)) {
-        store->type = PEEK;
-    } else if (!strncasecmp(op, "PUSH", 4)) {
-        store->type = PUSH;
-    } else if (!strncasecmp(op, "SP", 2)) {
-        store->type = SP;
-    } else if (!strncasecmp(op, "PC", 2)) {
-        store->type = PC;
-    } else if (!strncasecmp(op, "O", 1)) {
-        store->type = O;
-    } else if (isalpha(*op)) {
-        /* Register or label */
-        store->addressing = IMMEDIATE;
+dcpu16token next_token() {
+#define return_(x) printf("%d:%s\n", curline, #x); return x;
+    /*
+    if (!line_start) {
+        while (!isspace(*cur_pos))
+            if (*cur_pos == '\0')
+                return T_NEWLINE;
+            else
+                cur_pos++;
+    }
+    */
+    line_start = 0;
 
-        if (strlen(op) > 1) {
-            store->type = LABEL;
-            strncpy(store->label, op, sizeof(store->label) - 1);
-        } else {
-            store->type = REGISTER;
-            store->value = parse_register(&op);
-        }
-    } else if (isdigit(*op)) {
-        uint16_t num = read_numeric(&op);
-        store->addressing = IMMEDIATE;
-        store->type = LITERAL;
-        store->value = num;
-    } else if (*op == '[') {
-        char *end = op + strlen(op) - 1;
-        char *plus = NULL;
-        /* Anything indirect */
-        op++;
-
-        store->addressing = RAMLOCATION;
-
-        /* Check for matching ']' */
-        while (isspace(*end))
-            --end;
-        
-        if (*end != ']')
-            error("Unclosed '[', got '%c' instead", *end);
- 
-        *(end) = '\0';
-
-        while (isspace(*op))
-            op++;
-
-        /*
-         * "[A + B]" is now "A + B]" with no trailing or leading whitespace
-         */
-        if ((plus = strstr(op, "+")) != NULL) {
-            uint16_t num = 0;
-            uint8_t reg  = 0;
-
-            /* Move pointer behind the '+' */
-            plus++;
-
-            /* [Literal], [Register] */
-            if (isalpha(*op)) {
-                /* [Register + Literal] */
-                reg = parse_register(&op);
-                num = read_numeric(&plus);
-            } else if (isdigit(*op)) {
-                /* [Literal + Register] */
-                reg = parse_register(&plus);
-                num = read_numeric(&op);
-            } else {
-                error("Expected register or literal, got '%s'", op);
-            }
-
-            while (isspace(*op))
-                op++;
-            while (isspace(*plus))
-                plus++;
-
-            if (*op != '+')
-                error("Expected '+', got '%c'", *op);
-
-            op = plus;
-
-            store->type = REGISTER_PLUS_LITERAL;
-            store->value = reg;
-            store->next = num;
-        } else {
-            /* [Literal], [Register] */
-            if (isalpha(*op)) {
-                /* [Register] */
-                if (strlen(op) > 1) {
-                    store->type = LABEL;
-                    strncpy(store->label, op, sizeof(store->label) - 1);
-
-                    op += strlen(op);
-                } else {
-                    store->type = REGISTER;
-                    store->value = parse_register(&op);
-                }
-            } else if (isdigit(*op)) {
-                /* [Literal] */
-                store->type = LITERAL;
-                store->value = read_numeric(&op);
-            } else {
-                error("Expected register or literal, got '%c'", op);
-            }
-        }
-
-        while (isspace(*op))
-            op++;
-
-        if (strlen(op) != 0)
-            error("Expected ',' or EOL, got '%s'", op);
-
-    } else {
-        error("Expected OPERAND, got '%s'", op);
+    /* Then skip all spaces TO the next token */
+    while (isspace(*cur_pos)) {
+        cur_pos++;
     }
 
-    return;
+    printf("%d: '%s'\n", curline, cur_pos);
+
+    /* Test some operators */
+    switch (*cur_pos++) {
+    case '\0':
+    case '\n': return_(T_NEWLINE);
+    case ',': return_(T_COMMA);
+    case '[': return_(T_LBRACK);
+    case ']': return_(T_RBRACK);
+    case '+': return_(T_PLUS);
+    case ':': return_(T_COLON);
+    default: break;
+    }
+
+    cur_pos--;
+
+#define TRY(i) if (!strncasecmp(cur_pos, #i, strlen(#i))) { \
+    cur_pos += strlen(#i);                                  \
+    return T_ ## i;                                         \
 }
 
-dcpu16opcode parse_opcode(const char *opstr) {
+    /* Try instructions */
+    TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL);
+    TRY(DIV); TRY(MOD); TRY(SHL); TRY(SHR);
+    TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); 
+    TRY(IFN); TRY(IFG); TRY(IFB); TRY(JSR);
+
+    /* And some "special" registers */
+    TRY(POP); TRY(PEEK); TRY(PUSH);
+    TRY(SP); TRY(PC); TRY(O);
+
+#undef TRY
+
+    if (isalpha(*cur_pos)) {
+        int strlength = 0;
+
+        /* Register or label */
+        while (isalnum(*cur_pos++))
+            strlength++;
+
+        cur_pos--;
+
+        if (strlength > 1) {
+            strncpy(cur_tok.string, cur_pos - strlength - 1, strlength);
+            cur_tok.string[strlength] = '\0';
+
+            return_(T_STRING);
+        } else {
+            return parse_register(*(cur_pos - strlength));
+        }
+    } else if (isdigit(*cur_pos)) {
+        cur_tok.number = read_numeric(cur_pos);
+
+        while (isdigit(*cur_pos) || (*cur_pos == 'x'))
+            cur_pos++;
+
+        return_(T_NUMBER);
+    }
+
+    error("Unrecognized input '%s'", cur_pos);
+    return T_NEWLINE;
+#undef return
+}
+
+dcpu16token parse_opcode(const char *opstr) {
     /* Sorry... */
-#define TRY(op) if (!strcasecmp(opstr, #op)) return op;
+#define TRY(op) if (!strcasecmp(opstr, #op)) return T_ ## op;
 
     TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL);
     TRY(DIV); TRY(MOD); TRY(SHL); TRY(SHR);
     TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); 
     TRY(IFN); TRY(IFG); TRY(IFB); TRY(JSR);
 
-    return INV;
+    return -1;
 }
 
 void display_help() {
