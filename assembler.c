@@ -132,7 +132,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("Assembling '%s'...\n", outfile);
     if ((output = fopen(outfile, "w+")) == NULL) {
         fprintf(stderr, "Unable to open '%s' -- aborting\n", outfile);
 
@@ -437,7 +436,6 @@ uint16_t parse(list *lines, list *instructions, list *labels) {
             if (*token == ':') {
                 dcpu16label *label = malloc(sizeof(dcpu16label));
                 token++;
-                printf("Label '%s' (points to %04X)\n", token, instrlen);
 
                 strncpy(label->label, token, sizeof(label->label) - 1);
                 label->pc = instrlen;
@@ -480,8 +478,6 @@ uint16_t parse(list *lines, list *instructions, list *labels) {
             instrlen += get_instruction_length(&opa, &opb);
 
             list_push_back(instructions, instr);
-
-            printf("%s\t%s,\t%s\n", start, a, b);
         } else {
             dcpu16instruction *instr = malloc(sizeof(dcpu16instruction));
 
@@ -494,8 +490,6 @@ uint16_t parse(list *lines, list *instructions, list *labels) {
             instrlen += get_instruction_length(&opa, NULL);
 
             list_push_back(instructions, instr);
-
-            printf("%s\t%s\n", start, a);
         }
     }
 
@@ -654,7 +648,6 @@ void parse_operand(char *op, dcpu16operand *store) {
             /* [Literal], [Register] */
             if (isalpha(*op)) {
                 /* [Register] */
-                printf("%s\n", op);
                 if (strlen(op) > 1) {
                     store->type = LABEL_INDIRECT;
                     strncpy(store->label, op, sizeof(store->label) - 1);
