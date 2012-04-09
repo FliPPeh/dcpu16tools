@@ -17,7 +17,8 @@ typedef enum {
 } dcpu16opcode;
 
 typedef enum {
-    IMMEDIATE, RAMLOCATION
+    IMMEDIATE,
+    RAMLOCATION
 } dcpu16addresstype;
 
 typedef enum {
@@ -55,6 +56,7 @@ typedef struct {
 } dcpu16label;
 
 void error(const char*, ...);
+
 void display_help();
 void read_file(FILE*, list*);
 void strip_comments(list*);
@@ -270,10 +272,11 @@ void strip_comments(list *lines) {
         if ((loc = strstr(n->data, ";")) != NULL) {
             *loc = '\n';
 
-            while (isspace(*loc))
+            while ((char*)n->data < loc && isspace(*loc))
                 loc--;
 
-            *(loc + 1) = 0;
+            ++loc;
+            *loc = 0;
         }
     }
 }
