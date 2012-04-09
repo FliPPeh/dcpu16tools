@@ -17,23 +17,28 @@ typedef enum {
 } dcpu16opcode;
 
 typedef enum {
-    REGISTER,               /*  A  */
-    REGISTER_INDIRECT,      /* [A] */
+    IMMEDIATE, RAMLOCATION
+} dcpu16addresstype;
+
+typedef enum {
+    REGISTER,               /*  A, [A] */
     REGISTER_PLUS_LITERAL,  /* [0xXXXX + A] & [A + 0xXXXX] */
     POP, PEEK, PUSH, SP, PC, O,
     LITERAL,                /* 
-                             * 0x0 - 0xFFFF
+                             * 0x0 - 0xFFFF, [0x0] - [0xFFFF]
                              *   0x0 - 0x1f = 0x20 + literal
                              *   >0x1f      = next word
                              */
-    LITERAL_INDIRECT,       /* [0xXXXX] */
-    LABEL, LABEL_INDIRECT
+    LABEL                   /* foo, [foo] */
 } dcpu16operandtype;
 
 typedef struct {
+    dcpu16addresstype addressing;
     dcpu16operandtype type;
 
     uint16_t value;
+
+    /* If we know there's a next word, this will be it */
     uint16_t next;
     char label[512];
 } dcpu16operand;
@@ -205,17 +210,17 @@ void replace_labels(list *instr, list *lbls) {
     while (node != NULL) {
         dcpu16instruction *ptr = node->data;
         
-        if ((ptr->a.type == LABEL) || (ptr->a.type == LABEL_INDIRECT)) {
+        if (ptr->a.type == LABEL) {
             uint16_t pc = get_label_position(lbls, ptr->a.label);
 
-            ptr->a.type = ptr->a.type == LABEL ? LITERAL : LITERAL_INDIRECT;
+            ptr->a.type = LITERAL;
             ptr->a.value = pc;
         }
 
-        if ((ptr->b.type == LABEL) || (ptr->b.type == LABEL_INDIRECT)) {
+        if (ptr->b.type == LABEL) {
             uint16_t pc = get_label_position(lbls, ptr->b.label);
 
-            ptr->b.type = ptr->b.type == LABEL ? LITERAL : LITERAL_INDIRECT;
+            ptr->b.type = LITERAL;
             ptr->b.value = pc;
         }
 
@@ -264,6 +269,10 @@ void strip_comments(list *lines) {
         char *loc = NULL;
         if ((loc = strstr(n->data, ";")) != NULL) {
             *loc = '\n';
+
+            while (isspace(*loc))
+                loc--;
+
             *(loc + 1) = 0;
         }
     }
@@ -308,12 +317,11 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *w, int shift) {
 
     switch (op->type) {
     case REGISTER:
-        bv = op->value;
-        break;
+        if (op->addressing == IMMEDIATE)
+            bv = op->value;
+        else
+            bv = op->value + 0x8;
 
-    case REGISTER_INDIRECT:
-        /* Indirect register = registernum + 8 */
-        bv = op->value + 0x8;
         break;
 
     case REGISTER_PLUS_LITERAL:
@@ -347,26 +355,26 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *w, int shift) {
         break;
 
     case LABEL:
-        printf("HURR\n");
+        error("Tried to assemble an unresolved label");
         break;
 
     case LITERAL:
-        /* If the literal value is smaller than 32 (0x20) we can encode it
-         * in the same word */
-        if (op->value < 0x20) {
-            bv = 0x20 + op->value;
+        if (op->addressing == IMMEDIATE) {
+            /* If the literal value is smaller than 32 (0x20) we can encode it
+             * in the same word */
+            if (op->value < 0x20) {
+                bv = 0x20 + op->value;
+            } else {
+                bv = 0x1f; /* 0x1f = literal is in the next word */
+                *w = op->value;
+            }
         } else {
-            bv = 0x1f; /* 0x1f = literal is in the next word */
+            /* Literal references are always in the next word, no matter how
+             * small */
+            bv = 0x1e;
             *w = op->value;
         }
 
-        break;
-
-    case LITERAL_INDIRECT:
-        /* Literal references are always in the next word, no matter how
-         * small */
-        bv = 0x1e;
-        *w = op->value;
         break;
 
     default: break;
@@ -389,8 +397,9 @@ void encode(dcpu16opcode op, dcpu16operand *a, dcpu16operand *b,
 int has_next(dcpu16operand *op) {
     switch (op->type) {
     case REGISTER_PLUS_LITERAL:
-    case LITERAL_INDIRECT: return 1;
-    case LITERAL: return (op->value > 0x1f);
+    case LITERAL:
+        return ((op->value > 0x1f) || (op->addressing == RAMLOCATION));
+
     default: return 0;
     }
 }
@@ -579,6 +588,8 @@ void parse_operand(char *op, dcpu16operand *store) {
         store->type = O;
     } else if (isalpha(*op)) {
         /* Register or label */
+        store->addressing = IMMEDIATE;
+
         if (strlen(op) > 1) {
             store->type = LABEL;
             strncpy(store->label, op, sizeof(store->label) - 1);
@@ -588,6 +599,7 @@ void parse_operand(char *op, dcpu16operand *store) {
         }
     } else if (isdigit(*op)) {
         uint16_t num = read_numeric(&op);
+        store->addressing = IMMEDIATE;
         store->type = LITERAL;
         store->value = num;
     } else if (*op == '[') {
@@ -595,6 +607,8 @@ void parse_operand(char *op, dcpu16operand *store) {
         char *plus = NULL;
         /* Anything indirect */
         op++;
+
+        store->addressing = RAMLOCATION;
 
         /* Check for matching ']' */
         while (isspace(*end))
@@ -649,17 +663,17 @@ void parse_operand(char *op, dcpu16operand *store) {
             if (isalpha(*op)) {
                 /* [Register] */
                 if (strlen(op) > 1) {
-                    store->type = LABEL_INDIRECT;
+                    store->type = LABEL;
                     strncpy(store->label, op, sizeof(store->label) - 1);
 
                     op += strlen(op);
                 } else {
-                    store->type = REGISTER_INDIRECT;
+                    store->type = REGISTER;
                     store->value = parse_register(&op);
                 }
             } else if (isdigit(*op)) {
                 /* [Literal] */
-                store->type = LITERAL_INDIRECT;
+                store->type = LITERAL;
                 store->value = read_numeric(&op);
             } else {
                 error("Expected register or literal, got '%c'", op);
