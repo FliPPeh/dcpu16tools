@@ -427,7 +427,7 @@ uint16_t parse(list *lines, list *instructions, list *labels) {
             continue;
 
         /* Get the first word of the line */
-        token = strtok(start, " ");
+        token = strtok(start, " \t");
         if (token != NULL) {
             char *next = NULL;
 
@@ -442,7 +442,7 @@ uint16_t parse(list *lines, list *instructions, list *labels) {
 
                 list_push_back(labels, label);
 
-                next = strtok(NULL, " ");
+                next = strtok(NULL, " \t");
                 start = next;
             } else {
                 next = token;
