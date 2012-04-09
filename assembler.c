@@ -6,13 +6,14 @@
 #include <stdarg.h>
 #include <stdint.h>
 
+#include "linked_list.h"
 
 typedef enum {
+    INV,
     JSR, SET, ADD, SUB,
     MUL, DIV, MOD, SHL,
     SHR, AND, BOR, XOR,
-    IFE, IFN, IFG, IFB,
-    INV
+    IFE, IFN, IFG, IFB
 } dcpu16opcode;
 
 typedef enum {
@@ -25,7 +26,8 @@ typedef enum {
                              *   0x0 - 0x1f = 0x20 + literal
                              *   >0x1f      = next word
                              */
-    LITERAL_INDIRECT        /* [0xXXXX] */
+    LITERAL_INDIRECT,       /* [0xXXXX] */
+    LABEL
 } dcpu16operandtype;
 
 typedef struct {
@@ -33,14 +35,32 @@ typedef struct {
 
     uint16_t value;
     uint16_t next;
+    char label[512];
 } dcpu16operand;
+
+typedef struct {
+    dcpu16opcode opcode;
+    dcpu16operand a;
+    dcpu16operand b;
+} dcpu16instruction;
+
+typedef struct {
+    char label[512];
+    uint16_t pc;
+} dcpu16label;
 
 void error(const char*, ...);
 void display_help();
-void read_file(FILE*, char***);
-void strip_comments(char**);
-uint16_t assemble(char**, uint16_t**);
-int read_operand(char**, int, const char*);
+void read_file(FILE*, list*);
+void strip_comments(list*);
+uint16_t parse(list*, list*, list*);
+void replace_labels(list*, list*);
+void write_bin(list*, FILE*);
+void encode(dcpu16opcode, dcpu16operand*, dcpu16operand*,
+            uint16_t*, uint16_t*, uint16_t*);
+int has_next(dcpu16operand*);
+
+int read_operand(char**, const char*);
 dcpu16opcode parse_opcode(const char*);
 void parse_operand(char*, dcpu16operand*);
 
@@ -53,18 +73,19 @@ static int flag_littleendian = 0;
 /*
  * TODO: 
  *   Data sections (dat)
- *   Code generation
  *   Maybe build a real tokenizer
  */
 int main(int argc, char **argv) {
     int lopts_index = 0;
-    int i;
     char outfile[256] = "out.bin";
+
     FILE *input = stdin;
     FILE *output = NULL;
-    char **file_contents = NULL;
-    uint16_t *program = NULL;
-    uint16_t programlen = 0;
+
+    list *file_contents = list_create();
+
+    list *instructions = list_create();
+    list *labels = list_create();
 
     static struct option lopts[] = {
         {"littleendian", no_argument, NULL, 'l'},
@@ -119,37 +140,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    read_file(input, &file_contents);
+    read_file(input, file_contents);
     strip_comments(file_contents);
 
-    for (i = 0;; ++i) {
-        if (file_contents[i] == NULL)
-            break;
-
-        printf("% 3d  %s",  i+1, file_contents[i]);
-    }
-
-    programlen = assemble(file_contents, &program);
-
-    if (flag_littleendian == 1) {
-        for (i = 0; i < programlen; ++i) {
-            program[i] = ((program[i] & 0x00FF) << 8) | ((program[i] & 0xFF00) >> 8);
-        }
-    }
-
-    fwrite(program, sizeof(uint16_t), programlen, output);
+    /* Parse the file, storing labels and instructions as we go */
+    parse(file_contents, instructions, labels);
+    curline = -1;
+    replace_labels(instructions, labels);
+    write_bin(instructions, output);
 
     /* Release resources */
-    free(program);
-
-    for (i = 0;; ++i) {
-        if (file_contents[i] == NULL)
-            break;
-
-        free(file_contents[i]);
-    }
-
-    free(file_contents);
+    list_dispose(&instructions, &free);
+    list_dispose(&labels, &free);
+    list_dispose(&file_contents, &free);
 
     if (input != stdin)
         fclose(input);
@@ -157,6 +160,66 @@ int main(int argc, char **argv) {
     fclose(output);
 
     return 0;
+}
+
+void write_bin(list *instructions, FILE *output) {
+    list_node *node;
+
+    for (node = list_get_root(instructions); node != NULL; node = node->next) {
+        dcpu16instruction *instr = node->data;
+        uint16_t w_instr, w_a, w_b;
+
+        encode(instr->opcode, &(instr->a), &(instr->b), &w_instr, &w_a, &w_b);
+
+        fwrite(&w_instr, sizeof(uint16_t), 1, output);
+
+        if (has_next(&(instr->a)))
+            fwrite(&w_a, sizeof(uint16_t), 1, output);
+
+        if (has_next(&(instr->b)))
+            fwrite(&w_b, sizeof(uint16_t), 1, output);
+
+    }
+}
+
+uint16_t get_label_position(list *lbls, const char *lbl) {
+    list_node *node = list_get_root(lbls);
+
+    while (node != NULL) {
+        dcpu16label *ptr = node->data;
+
+        if (!strcmp(ptr->label, lbl))
+            return ptr->pc;
+
+        node = node->next;
+    }
+
+    error("Unresolved label '%s'\n", lbl);
+    return 0xFFFF;
+}
+
+void replace_labels(list *instr, list *lbls) {
+    list_node *node = list_get_root(instr);
+
+    while (node != NULL) {
+        dcpu16instruction *ptr = node->data;
+        
+        if (ptr->a.type == LABEL) {
+            uint16_t pc = get_label_position(lbls, ptr->a.label);
+
+            ptr->a.type = LITERAL;
+            ptr->a.value = pc;
+        }
+
+        if (ptr->b.type == LABEL) {
+            uint16_t pc = get_label_position(lbls, ptr->b.label);
+
+            ptr->b.type = LITERAL;
+            ptr->b.value = pc;
+        }
+
+        node = node->next;
+    }
 }
 
 void error(const char *fmt, ...) {
@@ -167,49 +230,38 @@ void error(const char *fmt, ...) {
     vsnprintf(errmsg, sizeof(errmsg) - 1, fmt, args);
     va_end(args);
 
-    fprintf(stderr, "%s:%d: %s\n", srcfile, curline, errmsg);
+    if (curline > 0)
+        fprintf(stderr, "%s:%d: %s\n", srcfile, curline, errmsg);
+    else
+        fprintf(stderr, "%s: %s\n", srcfile, errmsg);
 
     /* Let's have the operating system handle our unclosed files */
     exit(1);
 }
 
-void read_file(FILE *f, char ***store) {
-    int lines = 0;
-
+void read_file(FILE *f, list *lines) {
     do {
         /* 1024 characters should do */
         char buffer[1024] = {0};
 
         if (fgets(buffer, sizeof(buffer), f) != NULL) {
             int n = strlen(buffer);
+            
+            char *line = malloc(n * sizeof(char) + 1);
+            memset(line, 0, n * sizeof(char) + 1);
+            memcpy(line, buffer, n * sizeof(char));
 
-            *store = realloc(*store, (lines + 1) * sizeof(char*));
-            if (*store != NULL) {
-                char *line = malloc(n * sizeof(char) + 1);
-                memset(line, 0, n * sizeof(char) + 1);
-                memcpy(line, buffer, n * sizeof(char));
-                (*store)[lines++] = line;
-            } else {
-                printf("reallocation failed -- aborting\n");
-                return;
-            }
+            list_push_back(lines, line);
         }
     } while (!feof(f));
-
-    *store = realloc(*store, (lines + 1) * sizeof(char*));
-    (*store)[lines] = NULL;
 }
 
-void strip_comments(char **lines) {
-    int i;
+void strip_comments(list *lines) {
+    list_node *n;
 
-    for (i = 0;; ++i) {
+    for (n = list_get_root(lines); n != NULL; n = n->next) {
         char *loc = NULL;
-
-        if (lines[i] == NULL)
-            break;
-
-        if ((loc = strstr(lines[i], ";")) != NULL) {
+        if ((loc = strstr(n->data, ";")) != NULL) {
             *loc = '\n';
             *(loc + 1) = 0;
         }
@@ -293,6 +345,10 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *w, int shift) {
         bv = 0x1D;
         break;
 
+    case LABEL:
+        printf("HURR\n");
+        break;
+
     case LITERAL:
         /* If the literal value is smaller than 32 (0x20) we can encode it
          * in the same word */
@@ -339,20 +395,19 @@ int has_next(dcpu16operand *op) {
 }
 
 int get_instruction_length(dcpu16operand *a, dcpu16operand *b) {
-    return has_next(a) + has_next(b);
+    return 1 + has_next(a) + (b ? has_next(b) : 0);
 }
 
-uint16_t assemble(char **lines, uint16_t **program) {
-    int i;
-    uint16_t programlength = 0;
-    uint16_t instr, worda, wordb;
-    uint8_t instrlen = 0, words;
+uint16_t parse(list *lines, list *instructions, list *labels) {
+    list_node *n;
+    uint16_t instrlen = 0;
 
-    for (i = 0;; ++i) {
-        char *start = lines[i];
+    for (n = list_get_root(lines); n != NULL; n = n->next) {
+        char *start = n->data;
         char *token = NULL;
-        dcpu16opcode opcode = INV;
         char *a = NULL, *b = NULL;
+
+        dcpu16opcode opcode = INV;
         dcpu16operand opa = {0}, opb = {0};
 
         ++curline;
@@ -360,56 +415,92 @@ uint16_t assemble(char **lines, uint16_t **program) {
         if (start == NULL)
             break;
 
+        if ((start = strtok(start, "\n")) == NULL)
+            continue;
+        
         /* Skip any leading spaces */
         while (isspace(*start))
             start++;
-        
+
         /* Anything left? */
         if (strlen(start) == 0)
             continue;
 
+        /* Get the first word of the line */
         token = strtok(start, " ");
-        if ((token == NULL) || ((opcode = parse_opcode(token)) == INV)) {
-            error("Expected opcode, got '%s'", start);
-        }
+        if (token != NULL) {
+            char *next = NULL;
 
+            /* Check if we've got a label */
+            if (*token == ':') {
+                dcpu16label *label = malloc(sizeof(dcpu16label));
+                token++;
+                printf("Label '%s' (points to %04X)\n", token, instrlen);
+
+                strncpy(label->label, token, sizeof(label->label) - 1);
+                label->pc = instrlen;
+
+                list_push_back(labels, label);
+
+                next = strtok(NULL, " ");
+                start = next;
+            } else {
+                next = token;
+            }
+
+            /* Check if there is something after the label */
+            if (next != NULL) {
+                if ((opcode = parse_opcode(next)) == INV) {
+                    error("Expected opcode, got '%s'", next);
+                }
+            } else {
+                /* Job is done, only this label on this line */
+                continue;
+            }
+        } else {
+            error("Expected opcode or label, got '%s'", start);
+        }
 
         /* get a and possibly b */
         if (is_basic_instruction(opcode)) {
-            read_operand(&a, i+1, ",");
+            dcpu16instruction *instr = malloc(sizeof(dcpu16instruction));
+
+            read_operand(&a, ",");
             parse_operand(a, &opa);
 
-            read_operand(&b, i+1, "\n");
+            read_operand(&b, "\n");
             parse_operand(b, &opb);
+
+            instr->opcode = opcode;
+            instr->a = opa;
+            instr->b = opb;
+
+            instrlen += get_instruction_length(&opa, &opb);
+
+            list_push_back(instructions, instr);
 
             printf("%s\t%s,\t%s\n", start, a, b);
         } else {
-            read_operand(&a, i+1, "\n");
-            parse_operand(a, &opb);
+            dcpu16instruction *instr = malloc(sizeof(dcpu16instruction));
+
+            read_operand(&a, "\n");
+            parse_operand(a, &opa);
+
+            instr->opcode = opcode;
+            instr->a = opa;
+
+            instrlen += get_instruction_length(&opa, NULL);
+
+            list_push_back(instructions, instr);
 
             printf("%s\t%s\n", start, a);
         }
-
-        encode(opcode, &opa, &opb, &instr, &worda, &wordb);
-        words = 1 + get_instruction_length(&opa, &opb);
-
-        printf("Writing %d words\n", words);
-
-        *program = realloc(*program, (instrlen + words) * 2);
-        (*program)[instrlen++] = instr;
-
-        if (has_next(&opa))
-            (*program)[instrlen++] = worda;
-
-        if (has_next(&opb))
-            (*program)[instrlen++] = wordb;
-        
     }
 
     return instrlen;
 }
 
-int read_operand(char **src, int lineno, const char *sep) {
+int read_operand(char **src, const char *sep) {
     if ((*src = strtok(NULL, sep)) != NULL) {
         while (isspace(**src))
             (*src)++;
@@ -422,7 +513,11 @@ int read_operand(char **src, int lineno, const char *sep) {
     }
 
 error:
-    error("Expected operand, got '%s'", *src);
+    if (*src != NULL)
+        error("Expected operand, got '%s'", *src);
+    else
+        error("Expected operand, got nothing");
+
     return 1;
 }
 
@@ -464,8 +559,8 @@ uint8_t parse_register(char **reg) {
     case 'I': (*reg)++; return 0x6;
     case 'J': (*reg)++; return 0x7;
     default:
-        error("Expected 'A', 'B', 'C', 'X', 'Y', 'Z', 'I' or 'J', got '%c'",
-               **reg);
+        error("Expected 'A', 'B', 'C', 'X', 'Y', 'Z', 'I' or 'J', got '%s'",
+               *reg);
     }
 
     /* Since this can't happen, just make the compiler shut up */
@@ -487,9 +582,14 @@ void parse_operand(char *op, dcpu16operand *store) {
     } else if (!strncasecmp(op, "O", 1)) {
         store->type = O;
     } else if (isalpha(*op)) {
-        /* Register */
-        store->type = REGISTER;
-        store->value = parse_register(&op);
+        /* Register or label */
+        if (strlen(op) > 1) {
+            store->type = LABEL;
+            strncpy(store->label, op, sizeof(store->label) - 1);
+        } else {
+            store->type = REGISTER;
+            store->value = parse_register(&op);
+        }
     } else if (isdigit(*op)) {
         uint16_t num = read_numeric(&op);
         store->type = LITERAL;
@@ -589,7 +689,7 @@ void parse_operand(char *op, dcpu16operand *store) {
 
 dcpu16opcode parse_opcode(const char *opstr) {
     /* Sorry... */
-#define TRY(op) if (!strcmp(opstr, #op)) return op;
+#define TRY(op) if (!strcasecmp(opstr, #op)) return op;
 
     TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL);
     TRY(DIV); TRY(MOD); TRY(SHL); TRY(SHR);
