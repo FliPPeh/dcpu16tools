@@ -876,6 +876,9 @@ dcpu16token next_token() {
     TRY(SHR); TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); TRY(IFN); TRY(IFG);
     TRY(IFB); TRY(JSR);
 
+    /* Compatibility for other assemblers */
+    TRY(DAT); TRY(ORG);
+
     /* And some "special" registers */
     TRY(POP); TRY(PEEK); TRY(PUSH); TRY(SP); TRY(PC); TRY(O);
 
@@ -886,10 +889,10 @@ dcpu16token next_token() {
         int strlength = 0;
 
         /* Register or label */
-        while (isalnum(*cur_pos++))
+        while (isalnum(*cur_pos) || (*cur_pos == '_')) {
+            cur_pos++;
             strlength++;
-
-        cur_pos--;
+        }
 
         if (strlength > 1) {
             strncpy(cur_tok.string, cur_pos - strlength, strlength);
