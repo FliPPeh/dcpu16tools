@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
 
     write_memory();
 
-    fwrite(ram, sizeof(uint16_t), pc, output);
+    printf("Wrote %d words.\n", fwrite(ram, sizeof(uint16_t), pc, output));
     fclose(output);
 
     /* Release resources */
@@ -856,9 +856,11 @@ dcpu16token next_token() {
 
     cur_pos--;
 
-#define TRY(i) if (!strncasecmp(cur_pos, #i, strlen(#i))) { \
-    cur_pos += strlen(#i);                                  \
-    return_(T_ ## i);                                       \
+#define TRY(i) if (!strncasecmp(cur_pos, #i, strlen(#i))) {     \
+    if (!isalnum(*(cur_pos + strlen(#i)))) {                    \
+        cur_pos += strlen(#i);                                  \
+        return_(T_ ## i);                                       \
+    }                                                           \
 }
 
 #define TRYM(i) if (!strncasecmp(cur_pos, "." #i, strlen(#i) + 1)) { \
