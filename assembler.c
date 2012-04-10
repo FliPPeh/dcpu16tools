@@ -388,6 +388,9 @@ void write_memory() {
         pc = i->pc;
         encode(i, &op, &a, &b);
 
+        /*
+         * TODO: Endianness
+         */
         ram[pc++] = op;
 
         if (uses_next_word(&(i->a)))
