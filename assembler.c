@@ -224,7 +224,6 @@ int main(int argc, char **argv) {
 
     /* Read and cleanup */
     read_file(input, file_contents);
-    strip_comments(file_contents);
 
     /* Parse the file, storing labels and instructions as we go */
     parse(file_contents);
@@ -240,7 +239,7 @@ int main(int argc, char **argv) {
 
     write_memory();
 
-    fwrite(ram, sizeof(uint16_t), 0x10000, output);
+    fwrite(ram, sizeof(uint16_t), pc, output);
 
     /* Release resources */
     list_dispose(&labels, &free_label);
@@ -264,7 +263,8 @@ void error(const char *fmt, ...) {
     va_end(args);
 
     if (curline > 0)
-        fprintf(stderr, "%s:%d:%d: %s\n", srcfile, curline, cur_pos - cur_line, errmsg);
+        fprintf(stderr, "%s:%d:%d: %s\n", 
+                srcfile, curline, cur_pos - cur_line, errmsg);
     else
         fprintf(stderr, "%s: %s\n", srcfile, errmsg);
 
@@ -276,9 +276,20 @@ void read_file(FILE *f, list *lines) {
     do {
         /* 1024 characters should do */
         char buffer[1024] = {0};
+        char *loc = NULL;
 
         if (fgets(buffer, sizeof(buffer), f) != NULL) {
-            int n = strlen(buffer);
+            int n;
+            if ((loc = strstr(buffer, ";")) != NULL) {
+                *loc = '\n';
+
+                while (buffer < loc && isspace(*loc))
+                    loc--;
+
+                *(++loc) = '\0';
+            }
+
+            n = strlen(buffer);
             
             char *line = malloc(n * sizeof(char) + 1);
             memset(line, 0, n * sizeof(char) + 1);
@@ -287,23 +298,6 @@ void read_file(FILE *f, list *lines) {
             list_push_back(lines, line);
         }
     } while (!feof(f));
-}
-
-void strip_comments(list *lines) {
-    list_node *n;
-
-    for (n = list_get_root(lines); n != NULL; n = n->next) {
-        char *loc = NULL;
-        if ((loc = strstr(n->data, ";")) != NULL) {
-            *loc = '\n';
-
-            while ((char*)n->data < loc && isspace(*loc))
-                loc--;
-
-            ++loc;
-            *loc = 0;
-        }
-    }
 }
 
 uint16_t encode_opcode(dcpu16token t) {
@@ -458,9 +452,8 @@ dcpu16label *get_labeling(const char *label) {
     for (node = list_get_root(labels); node != NULL; node = node->next) {
         dcpu16label *ptr = node->data;
 
-        if (!(strcmp(ptr->label, label))) {
+        if (!(strcmp(ptr->label, label)))
             return ptr;
-        }
     }
     
     return NULL;
@@ -495,16 +488,14 @@ dcpu16operand assemble_operand() {
 
     if ((tok = next_token()) == T_STRING) {
         /* label */
-
         op.type = LABEL;
         op.label = get_label(cur_tok.string)->label;
     } else if (tok == T_NUMBER) {
         /* numeric */
         op.type = LITERAL;
         op.numeric = cur_tok.number;
-    } else if (is_register(tok)
-            || is_status_register(tok)
-            || is_stack_operation(tok)) {
+    } else if (is_register(tok) || is_status_register(tok)
+                                || is_stack_operation(tok)) {
         /* register */
 
         /* 
@@ -515,9 +506,9 @@ dcpu16operand assemble_operand() {
         op.type = REGISTER;
         op.token = tok;
     } else if (tok == T_LBRACK) {
-        dcpu16token a = next_token();
         /* [reference] */
-        
+        dcpu16token a = next_token();
+
         op.addressing = REFERENCE;
 
         if (a == T_NUMBER) {
@@ -526,16 +517,10 @@ dcpu16operand assemble_operand() {
             op.numeric = cur_tok.number;
         } else if (is_register(a)) {
             /* [register] */
-
-            /*
-             * For reference encoding, stack operations and status registers
-             * are not permitted
-             */
             op.type = REGISTER;
             op.token = a;
         } else if (a == T_STRING) {
             /* [label] */
-
             op.type = LABEL;
             op.label = get_label(cur_tok.string)->label;
         } else {
@@ -560,8 +545,7 @@ dcpu16operand assemble_operand() {
                 if (b == T_STRING) {
                     op.register_offset.type = LABEL;
                     op.register_offset.register_index = a;
-
-                    /* create_or_set_label(cur_tok.string); */
+                    op.register_offset.label = get_label(cur_tok.string)->label;
 
                 } else if (b == T_NUMBER) {
                     op.register_offset.type = LITERAL;
@@ -601,13 +585,11 @@ dcpu16operand assemble_operand() {
 }
 
 int uses_next_word(dcpu16operand *op) {
-    printf("Type: %d\n", op->type);
     if (op->type == LITERAL) {
-        if (op->addressing == IMMEDIATE) {
+        if (op->addressing == IMMEDIATE)
             return op->numeric > 0x1f;
-        } else {
+        else
             return 1;
-        }
     } else if (op->type == REGISTER_OFFSET) {
         return 1;
     } else if (op->type == LABEL) {
@@ -666,9 +648,8 @@ start:
             error("Expected EOL, got %s", toktostr(tok));
 
         /*
-         * All tokens valid, store instructions, advance SP
+         * All tokens valid, store instructions, advance PC
          */
-
         newinstr = malloc(sizeof(dcpu16instruction));
         memcpy(newinstr, &instr, sizeof(dcpu16instruction));
 
@@ -676,7 +657,6 @@ start:
 
         list_push_back(instructions, newinstr);
 
-        printf("%d: Instruction length: %d words\n", curline, instruction_length(&instr));
         pc += instruction_length(newinstr);
 
     } else if (is_macro(tok)) {
@@ -712,14 +692,12 @@ int parse(list *lines) {
 uint16_t read_numeric(char *op) {
     unsigned int num;
 
-    if (!strncmp(op, "0x", 2)) {
-        sscanf(op, "0x%X", (unsigned int *)&num);
-    } else if ((isdigit(*op))) {
-        /* Since normal numbers don't begin with a zero */
-        sscanf(op, "%d", (int *)&num);
-    } else {
-        error("Expected numeric, got '%s'", op);
-    }
+    if (!strncmp(op, "0x", 2))
+       sscanf(op, "0x%X", (unsigned int *)&num);
+    else if ((isdigit(*op)))
+       sscanf(op, "%d", (int *)&num);
+    else
+       error("Expected numeric, got '%s'", op);    
 
     return num;
 }
@@ -749,8 +727,6 @@ dcpu16token next_token() {
     while (isspace(*cur_pos)) {
         cur_pos++;
     }
-
-//    printf("%d: '%s'\n", curline, cur_pos);
 
     /* Test some operators */
     switch (*cur_pos++) {
@@ -812,7 +788,7 @@ dcpu16token next_token() {
     } else if (isdigit(*cur_pos)) {
         cur_tok.number = read_numeric(cur_pos);
 
-        while (isdigit(*cur_pos) || (*cur_pos == 'x'))
+        while (isxdigit(*cur_pos) || (*cur_pos == 'x'))
             cur_pos++;
 
         return_(T_NUMBER);
@@ -831,6 +807,8 @@ dcpu16token parse_opcode(const char *opstr) {
     TRY(DIV); TRY(MOD); TRY(SHL); TRY(SHR);
     TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); 
     TRY(IFN); TRY(IFG); TRY(IFB); TRY(JSR);
+
+#undef TRY
 
     return -1;
 }
