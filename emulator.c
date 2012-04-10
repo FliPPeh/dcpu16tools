@@ -68,6 +68,10 @@ static int flag_halt = 0;
 static uint16_t literals[32] = {0};
 
 
+/*
+ * TODO: * Improve reading in program file
+ *       * Emulate clockrate (100 kHz) and clock cycles
+ */
 int main(int argc, char **argv) {
     int lopts_index = 0;
     FILE *source = stdin;
@@ -126,7 +130,7 @@ int main(int argc, char **argv) {
 
         /* '-' is an optional, explicit request to use stdin */
         if (strcmp(fname, "-")) {
-            if ((source = fopen(fname, "r")) == NULL) {
+            if ((source = fopen(fname, "rb")) == NULL) {
                 fprintf(stderr, "Unable to open '%s' -- aborting\n", fname);
                 return 1;
             }
@@ -202,7 +206,8 @@ void display_help() {
            "                      rather than big endian.\n"
            "  -d, --disassemble   Print the instructions that make up "
                                  "the program instead\n"
-           "                      of executing it.\n"
+           "                      of executing it.  Origin offsets, labels"
+                                 "and data sections are not restored.\n"
            "  -H, --halt          Automatically stop executing if the PC "
                                  "did not change\n"
            "                      after an instruction\n"

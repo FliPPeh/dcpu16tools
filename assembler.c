@@ -156,9 +156,7 @@ void free_label(void *d) {
 
 /*
  * TODO: 
- *   Data sections (dat)
- *     - :data dat "str", 0xXXXXXX, "str2"
- *     - Write the data at that position (data-> beginning of data, dat = macro)
+ *   Actually make endianness work
  *   Constrain labels to [_a-zA-Z][a-zA-Z0-9_]+ (C-Style)
  */
 int main(int argc, char **argv) {
