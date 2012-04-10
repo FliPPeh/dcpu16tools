@@ -21,7 +21,7 @@ typedef enum {
     T_PLUS,   /* '+' */
     T_A, T_B, T_C, T_X, T_Y, T_Z, T_I, T_J, /* Registers */
     T_POP, T_PEEK, T_PUSH, /* POP, PEEK, PUSH */
-    T_OP, T_PC, T_O, T_SP,
+    T_PC, T_O, T_SP,
     T_SET, T_ADD, T_SUB, T_MUL, T_DIV, T_MOD, T_SHL, T_SHR,
     T_AND, T_BOR, T_XOR, T_IFE, T_IFN, T_IFG, T_IFB, T_JSR,
     T_NEWLINE
@@ -261,7 +261,7 @@ int is_register(dcpu16token t) {
     case T_X: case T_Y: case T_Z:
     case T_I: case T_J:
     case T_POP: case T_PEEK: case T_PUSH:
-    case T_OP: case T_PC: case T_O: case T_SP:
+    case T_PC: case T_O: case T_SP:
         return 1;
     default:
         return 0;
