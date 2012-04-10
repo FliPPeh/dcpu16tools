@@ -17,7 +17,7 @@
  * Tokens
  */
 typedef enum {
-    T_STRING, /* Any string */
+    T_IDENTIFIER, /* An identifier */
     T_NUMBER, /* Any number */
     T_LBRACK, /* '[' */
     T_RBRACK, /* ']' */
@@ -32,7 +32,7 @@ typedef enum {
     T_SHR, T_AND, T_BOR, T_XOR, T_IFE, T_IFN, T_IFG, T_IFB,
 
     T_JSR,
-    T_ORG,  /* Assembler macros */
+    T_ORG, T_DAT,  /* Assembler macros */
     T_NEWLINE
 } dcpu16token;
 
@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if ((output = fopen(outfile, "w+")) == NULL) {
+    if ((output = fopen(outfile, "wb+")) == NULL) {
         fprintf(stderr, "Unable to open '%s' -- aborting\n", outfile);
 
         if (input != stdin)
@@ -240,6 +240,7 @@ int main(int argc, char **argv) {
     write_memory();
 
     fwrite(ram, sizeof(uint16_t), pc, output);
+    fclose(output);
 
     /* Release resources */
     list_dispose(&labels, &free_label);
@@ -248,8 +249,6 @@ int main(int argc, char **argv) {
 
     if (input != stdin)
         fclose(input);
-
-    fclose(output);
 
     return 0;
 }
@@ -399,7 +398,7 @@ char *toktostr(dcpu16token t) {
         case T_A: case T_B: case T_C: case T_X: case T_Y: case T_Z:
         case T_I: case T_J:
             return "register";
-        case T_STRING:
+        case T_IDENTIFIER:
             return "label";
         case T_NUMBER:
             return "numeric";
@@ -435,7 +434,7 @@ int is_instruction(dcpu16token t) {
 }
 
 int is_macro(dcpu16token t) {
-    return (t == T_ORG);
+    return ((t >= T_ORG) && (t <= T_DAT));
 }
 
 int is_nonbasic_instruction(dcpu16token t) {
@@ -486,7 +485,7 @@ dcpu16operand assemble_operand() {
 
     op.addressing = IMMEDIATE;
 
-    if ((tok = next_token()) == T_STRING) {
+    if ((tok = next_token()) == T_IDENTIFIER) {
         /* label */
         op.type = LABEL;
         op.label = get_label(cur_tok.string)->label;
@@ -519,7 +518,7 @@ dcpu16operand assemble_operand() {
             /* [register] */
             op.type = REGISTER;
             op.token = a;
-        } else if (a == T_STRING) {
+        } else if (a == T_IDENTIFIER) {
             /* [label] */
             op.type = LABEL;
             op.label = get_label(cur_tok.string)->label;
@@ -542,7 +541,7 @@ dcpu16operand assemble_operand() {
 
             if (is_register(a)) {
                 /* [register + label], [register + numeric] */
-                if (b == T_STRING) {
+                if (b == T_IDENTIFIER) {
                     op.register_offset.type = LABEL;
                     op.register_offset.register_index = a;
                     op.register_offset.label = get_label(cur_tok.string)->label;
@@ -616,7 +615,7 @@ start:
 
     if (tok == T_COLON) {
         /* Label definition */
-        if ((tok = next_token()) == T_STRING) {
+        if ((tok = next_token()) == T_IDENTIFIER) {
             dcpu16label *l = get_label(cur_tok.string);
 
             if (l->defined)
@@ -665,6 +664,13 @@ start:
                 pc = cur_tok.number;
             else
                 error("Expected numeric, got %s", toktostr(tok));
+        } else if (tok == T_DAT) {
+            list *data = list_create();
+
+            next_token();
+            ram[pc++] = cur_tok.number;
+
+            list_dispose(&data, &free);
         }
     } else if (tok == T_NEWLINE) {
         return;
@@ -749,7 +755,7 @@ dcpu16token next_token() {
 }
 
     /* Try assembler pseudo instructions */
-    TRYM(ORG);
+    TRYM(ORG); TRYM(DAT);
 
     /* Try instructions */
     TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL); TRY(DIV); TRY(MOD); TRY(SHL);
@@ -775,7 +781,7 @@ dcpu16token next_token() {
             strncpy(cur_tok.string, cur_pos - strlength, strlength);
             cur_tok.string[strlength] = '\0';
 
-            return_(T_STRING);
+            return_(T_IDENTIFIER);
         } else {
             return parse_register(*(cur_pos - strlength));
         }
