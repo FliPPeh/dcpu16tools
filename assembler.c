@@ -32,7 +32,7 @@ typedef enum {
     T_SHR, T_AND, T_BOR, T_XOR, T_IFE, T_IFN, T_IFG, T_IFB,
 
     T_JSR,
-    T_ORG  /* Assembler macros */
+    T_ORG,  /* Assembler macros */
     T_NEWLINE
 } dcpu16token;
 
