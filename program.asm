@@ -38,3 +38,6 @@ SET PC, boom
 
 .org 0x200
 :ramstuff .dat "Hello, World!", 0
+
+; test --paranoid
+.org 0x50

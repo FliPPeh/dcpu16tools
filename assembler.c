@@ -137,6 +137,7 @@ void write_memory();
  * Options and output parameters
  */
 static int flag_littleendian = 0;
+static int flag_paranoid = 0;
 static list *labels;
 static list *instructions;
 static uint16_t ram[0x10000];
@@ -173,11 +174,12 @@ int main(int argc, char **argv) {
     static struct option lopts[] = {
         {"littleendian", no_argument, NULL, 'l'},
         {"help",         no_argument, NULL, 'h'},
+        {"paranoid",     no_argument, NULL, 'p'},
         {NULL,           0,           NULL,  0 }
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "lho:", lopts, &lopts_index);
+        int opt = getopt_long(argc, argv, "lho:p", lopts, &lopts_index);
 
         if (opt < 0)
             break;
@@ -193,6 +195,10 @@ int main(int argc, char **argv) {
         case 'h':
             display_help();
             return 0;
+
+        case 'p':
+            flag_paranoid = 1;
+            break;
 
         case 'o':
             strncpy(outfile, optarg, sizeof(outfile));
@@ -663,10 +669,18 @@ start:
 
     } else if (is_macro(tok)) {
         if (tok == T_ORG) {
-            if ((tok = next_token()) == T_NUMBER)
+            if ((tok = next_token()) == T_NUMBER) {
+                if (flag_paranoid && (cur_tok.number < pc)) {
+                    printf("%s:%d:%d: WARNING: new origin precedes old origin! "
+                           "This could cause already written code to be "
+                           "overriden.\n",
+                           srcfile, curline, cur_pos - cur_line);
+                }
+
                 pc = cur_tok.number;
-            else
+            } else {
                 error("Expected numeric, got %s", toktostr(tok));
+            }
         } else if (tok == T_DAT) {
             /* All of the stuff we are about to read, neatly packed
              * into words */
@@ -786,7 +800,7 @@ uint8_t parse_register(char reg) {
 }
 
 dcpu16token next_token() {
-#define return_(x) printf("%d:%s\n", curline, #x); return x;
+#define return_(x) /*printf("%d:%s\n", curline, #x);*/ return x;
     /* Skip all spaces TO the next token */
     while (isspace(*cur_pos))
         cur_pos++;
@@ -864,6 +878,8 @@ void display_help() {
            "  -h, --help          Display this help\n"
            "  -l, --littleendian  Generate little endian bytecode "
                                  "rather than big endian\n"
+           "  -p, --paranoid      Turn on warnings about non-fatal (but "
+                                 "potentially harmful) problems\n"
            "  -o FILENAME         Write output to FILENAME instead of "
                                  "\"out.bin\"\n"
            "\n"
