@@ -11,7 +11,7 @@
 /*
  * Maximum length of a label
  */
-#define LABELMAX 64
+#define MAXLABEL 64
 
 /*
  * Tokens
@@ -32,23 +32,41 @@ typedef enum {
     T_NEWLINE
 } dcpu16token;
 
-static char *cur_pos;
-static int line_start;
 
+/*
+ * Parser state
+ */
+static char *cur_pos;
 union {
     char string[256];
     uint16_t number;
 } cur_tok;
 
+/*
+ * An entry in the global label list
+ */
 typedef struct {
     char label[MAXLABEL];
     uint16_t pc;
 } dcpu16label;
 
+/*
+ * Specifies whether an operand is an immediate
+ * value or a reference inside the RAM at that
+ * position
+ */
 typedef enum {
     IMMEDIATE, REFERENCE
 } dcpu16addressing;
 
+/*
+ * Specifies the type of operand, where
+ *    LITERAL           = 0x0000 - 0xFFFFF
+ *    LABEL             = an alphanumeric alies for the PC it was defined at
+ *    REGISTER          = A, B, C, X, Y, Z, I, J
+ *                          also POP, PUSH, PEEK, PC, SP, O in immediate context
+ *    REGISTER_OFFSET   = Only valid as reference: [A + 0xFFFF]
+ */
 typedef enum {
     LITERAL, LABEL, REGISTER, REGISTER_OFFSET
 } dcpu16operandtype;
@@ -71,7 +89,7 @@ typedef struct {
     union {
         dcpu16token token;
         uint16_t numeric;
-        char label[MAXLEVEL];
+        char label[MAXLABEL];
         dcpu16registeroffset register_offset;
     };
 } dcpu16operand;
@@ -444,8 +462,6 @@ int parse(list *lines) {
         cur_pos = start;
         curline++;
 
-        line_start = 1;
-
         assemble_line();        
     }
 
@@ -488,18 +504,7 @@ uint8_t parse_register(char reg) {
 
 dcpu16token next_token() {
 #define return_(x) printf("%d:%s\n", curline, #x); return x;
-    /*
-    if (!line_start) {
-        while (!isspace(*cur_pos))
-            if (*cur_pos == '\0')
-                return T_NEWLINE;
-            else
-                cur_pos++;
-    }
-    */
-    line_start = 0;
-
-    /* Then skip all spaces TO the next token */
+    /* Skip all spaces TO the next token */
     while (isspace(*cur_pos)) {
         cur_pos++;
     }
