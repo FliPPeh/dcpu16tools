@@ -784,16 +784,30 @@ uint16_t read_numeric() {
 }
 
 dcpu16token read_string() {
+    char chr;
     int i = 0;
 
     while (*cur_pos != '\"') {
-        if (*cur_pos == '\0')
+        if (*cur_pos == '\0') {
            error("Expected '\"', got EOL");
+        } else if (*cur_pos == '\\') {
+            switch (*++cur_pos) {
+            case '\"': chr = '\"'; break;
+            case '\\': chr = '\\'; break;
+            case '\t': chr = '\t'; break;
+            case '\r': chr = '\r'; break;
+            default: error("Unknown escape character '%c'", *cur_pos);
+            }
+
+            cur_pos++;
+        } else {
+            chr = *cur_pos++;
+        }
 
         if (i >= (sizeof(cur_tok.string) - 1))
             break;
 
-        cur_tok.string[i++] = *cur_pos++;
+        cur_tok.string[i++] = chr;
     }
 
     cur_pos++;
