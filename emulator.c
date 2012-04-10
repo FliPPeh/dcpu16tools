@@ -169,6 +169,7 @@ int main(int argc, char **argv) {
         cbreak();
         nodelay(stdscr, TRUE);
         noecho();
+        start_color();
     }
 
     /* Read program into memory */
@@ -558,7 +559,8 @@ void emulate(dcpu16 *cpu) {
 
         updatescreen(cpu);
 
-        usleep(10);
+        /* Add clock cycles, then enable
+        usleep(10); */
 
         if ((last_pc == cpu->pc) && flag_halt)
             break;
@@ -576,10 +578,13 @@ void updatescreen(dcpu16 *cpu) {
     for (x = 0; x < 32; ++x) {
         for (y = 0; y < 13; ++y) {
             char asciival = (vram[y * 32 + x] & 0x00FF);
+            uint8_t fg = (vram[y * 32 + x] & 0xF000) >> 12;
+            uint8_t bg = (vram[y * 32 + x] & 0x0F00) >> 8;
 
+            /* Do something with fb and bg... */
             move(y, x);
 
-            if (asciival != 0)
+            if (isprint(asciival))
                 addch(asciival);
             else
                 addch(' ');
