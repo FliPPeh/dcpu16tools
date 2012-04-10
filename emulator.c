@@ -166,6 +166,9 @@ int main(int argc, char **argv) {
 
     if (flag_vga) {
         initscr();
+        cbreak();
+        nodelay(stdscr, TRUE);
+        noecho();
     }
 
     /* Read program into memory */
@@ -540,10 +543,16 @@ void dcpu16_step(dcpu16 *cpu) {
 
 void emulate(dcpu16 *cpu) {
     uint16_t last_pc = 0xFFFF;
+    uint16_t keybuffer = 0;
+    char c;
 
     while (cpu->pc < RAMSIZE) {
         if (flag_verbose)
             dump_cpu(cpu);
+
+        if ((c = getch()) > 0) {
+            cpu->ram[0x9000 + (keybuffer++ % 0x1)] = c;
+        }
 
         dcpu16_step(cpu);
 
@@ -567,8 +576,6 @@ void updatescreen(dcpu16 *cpu) {
     for (x = 0; x < 32; ++x) {
         for (y = 0; y < 13; ++y) {
             char asciival = (vram[y * 32 + x] & 0x00FF);
-
-            fprintf(stderr, "%c (%d)\n", asciival, asciival);
 
             move(y, x);
 
