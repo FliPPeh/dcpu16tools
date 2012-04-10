@@ -22,6 +22,7 @@
 #include <getopt.h>
 #include <stdint.h>
 #include <string.h>
+#include <ncurses.h>
 
 #define RAMSIZE 0x10000
 
@@ -77,11 +78,13 @@ void display_help();
 void emulate(dcpu16*);
 void disassemble(dcpu16*);
 
+void updatescreen(dcpu16*);
 
 static int flag_disassemble = 0;
 static int flag_verbose = 0;
 static int flag_littleendian = 0;
 static int flag_halt = 0;
+static int flag_vga = 0;
 
 /* So we can return a pointer to a literal value */
 static uint16_t literals[32] = {0};
@@ -95,19 +98,20 @@ int main(int argc, char **argv) {
     int lopts_index = 0;
     FILE *source = stdin;
     uint8_t *program = NULL;
-    uint16_t programsize = 0;
+    int programsize = 0;
 
     static struct option lopts[] = {
         {"verbose",      no_argument, NULL, 'v'},
         {"help",         no_argument, NULL, 'h'},
         {"littleendian", no_argument, NULL, 'l'},
         {"disassemble",  no_argument, NULL, 'd'},
+        {"vga",          no_argument, NULL, 'V'},
         {"halt",         no_argument, NULL, 'H'},
         {NULL,           0,           NULL,  0 }
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "vdhH", lopts, &lopts_index);
+        int opt = getopt_long(argc, argv, "vVdhHl", lopts, &lopts_index);
 
         if (opt < 0)
             break;
@@ -127,6 +131,10 @@ int main(int argc, char **argv) {
 
         case 'v':
             flag_verbose = 1;
+            break;
+
+        case 'V':
+            flag_vga = 1;
             break;
 
         case 'd':
@@ -149,11 +157,15 @@ int main(int argc, char **argv) {
 
         /* '-' is an optional, explicit request to use stdin */
         if (strcmp(fname, "-")) {
-            if ((source = fopen(fname, "rb")) == NULL) {
+            if ((source = fopen(fname, "r")) == NULL) {
                 fprintf(stderr, "Unable to open '%s' -- aborting\n", fname);
                 return 1;
             }
         }
+    }
+
+    if (flag_vga) {
+        initscr();
     }
 
     /* Read program into memory */
@@ -211,6 +223,9 @@ int main(int argc, char **argv) {
         free(program);
         free(programcode);
     }
+
+    if (flag_vga)
+        endwin();
 
     return 0;
 }
@@ -512,7 +527,9 @@ void dcpu16_step(dcpu16 *cpu) {
     dcpu16instr instr = {0};
 
     dcpu16_fetch(&instr, cpu);
-    inspect_instruction(cpu, &instr);
+
+    if (flag_verbose)
+        inspect_instruction(cpu, &instr);
 
     if (!cpu->skip_next)
         dcpu16_execute(&instr, cpu);
@@ -523,17 +540,46 @@ void dcpu16_step(dcpu16 *cpu) {
 
 void emulate(dcpu16 *cpu) {
     uint16_t last_pc = 0xFFFF;
+
     while (cpu->pc < RAMSIZE) {
         if (flag_verbose)
             dump_cpu(cpu);
 
         dcpu16_step(cpu);
 
+        updatescreen(cpu);
+
+        usleep(10);
+
         if ((last_pc == cpu->pc) && flag_halt)
             break;
 
         last_pc = cpu->pc;
     }
+}
+
+void updatescreen(dcpu16 *cpu) {
+    uint16_t x, y;
+    uint16_t *vram = cpu->ram + 0x8000;
+
+    //clear();
+
+    for (x = 0; x < 32; ++x) {
+        for (y = 0; y < 13; ++y) {
+            char asciival = (vram[y * 32 + x] & 0x00FF);
+
+            fprintf(stderr, "%c (%d)\n", asciival, asciival);
+
+            move(y, x);
+
+            if (asciival != 0)
+                addch(asciival);
+            else
+                addch(' ');
+        }
+    }
+
+    refresh();
 }
 
 void disassemble(dcpu16 *cpu) {
