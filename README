@@ -27,7 +27,7 @@ implemented:
      * "Above average" error messages (and warnings if "--paranoid" is given)
 
      * Label support as literals, references and offset registers
-         (i.e. JSR label, JSR [label], JSR [label + 4])
+         (i.e. JSR label, JSR [label], JSR [label + A])
 
      * Data sections
          (i.e. :data .dat "Hello, World!", 0)
