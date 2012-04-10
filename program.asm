@@ -27,6 +27,8 @@
 
 ; Hang forever. X should now be 0x40 if everything went right.
 :crash        SET [ramstuff], 0xEFEF
+              SET A, 7
+              SET X, [ramstuff + A]
               SET PC, boom            ; 7dc1 001a [*]
 
 ; [*]: Note that these can be one word shorter and one cycle faster
@@ -38,6 +40,3 @@ SET PC, boom
 
 .org 0x200
 :ramstuff .dat "Hello, World!", 0
-
-; test --paranoid
-.org 0x50

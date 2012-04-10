@@ -1,0 +1,59 @@
+dcpu16tools contains various utlities involving the DCPU-16 architecture for
+the upcoming game 0x10c (http://www.0x10c.com).
+
+As of now, the following programs and features have been (or are planned to be)
+implemented:
+
+  Emulator/Disassembler:
+     * Rudimentary endianness switching (on the top of the "FIXME" list)
+
+     * Slightly sophisiticated disassembling
+        - Disassembles instructions only, since origin offsets and data sections
+          are usually generated via assembler macros and can not be detected
+          in bytecode
+
+     * Auto-Halting, halts the CPU if PC did not change after executing an
+       instruction.
+
+     * Some slighty fancy output if verbose mode is enabled
+
+     * PLANNED: Video emulation via ncurses
+
+     * PLANNED: Actual clock cycle emulation
+
+     * PLANNED: Hexdump-like input
+
+  Assembler:
+     * "Above average" error messages (and warnings if "--paranoid" is given)
+
+     * Label support as literals, references and offset registers
+         (i.e. JSR label, JSR [label], JSR [label + 4])
+
+     * Data sections
+         (i.e. :data .dat "Hello, World!", 0)
+
+     * Origin offsets
+         i.e.:
+           SET [vram + A], 0x42
+           ADD A,          1
+           SET [vram + A], 0x43
+
+           .org 0x8000
+           :vram
+
+     * PLANNED: All the endian goodness.
+
+     * PLANNED: Hexdump-like output format (Somewhat human readable)
+
+
+All programs are written to be easily modified to accomodate DCPU-16 spec
+changes in future and to be easily hackable and understandable, at the expense
+of code length (the assembler code is about 1.5 times longer than other DCPU-16
+assemblers written in C that I have found).
+
+The programs have been tested on Linux and should work without modification on
+most POSIX compatible systems and Windows with some minor changes (getopt_long
+related).
+
+This project is licensed under the GPL v2 or any later version. Feel free to
+toy around with this as you please!

@@ -1,0 +1,9 @@
+TODO: Factor out common structures used by both the emulator and assembler
+
+Assembler TODO: Endian conversion
+                Hexdump output
+
+Emulator  TODO: Endian conversion
+                Hexdump input
+                Video mode (ncurses)
+                Clock cycles
