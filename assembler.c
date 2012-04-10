@@ -756,14 +756,12 @@ dcpu16token next_token() {
     TRYM(ORG);
 
     /* Try instructions */
-    TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL);
-    TRY(DIV); TRY(MOD); TRY(SHL); TRY(SHR);
-    TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); 
-    TRY(IFN); TRY(IFG); TRY(IFB); TRY(JSR);
+    TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL); TRY(DIV); TRY(MOD); TRY(SHL);
+    TRY(SHR); TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); TRY(IFN); TRY(IFG);
+    TRY(IFB); TRY(JSR);
 
     /* And some "special" registers */
-    TRY(POP); TRY(PEEK); TRY(PUSH);
-    TRY(SP); TRY(PC); TRY(O);
+    TRY(POP); TRY(PEEK); TRY(PUSH); TRY(SP); TRY(PC); TRY(O);
 
 #undef TRY
 #undef TRYM
@@ -794,7 +792,7 @@ dcpu16token next_token() {
         return_(T_NUMBER);
     }
 
-    error("Unrecognized input '%s'", cur_pos);
+    error("Unrecognized input '%c'", *cur_pos);
     return T_NEWLINE;
 #undef return_
 }
