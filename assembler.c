@@ -32,7 +32,7 @@ typedef enum {
     T_SHR, T_AND, T_BOR, T_XOR, T_IFE, T_IFN, T_IFG, T_IFB,
 
     T_JSR,
-    T_ORG, /* Assembler macro */
+    T_ORG  /* Assembler macros */
     T_NEWLINE
 } dcpu16token;
 
@@ -628,7 +628,7 @@ start:
 
             goto start;
         } else {
-            error("Expected string, got %s", toktostr(tok));
+            error("Expected label, got %s", toktostr(tok));
         }
     } else if (is_instruction(tok)) {
         dcpu16instruction instr, *newinstr;
@@ -667,7 +667,7 @@ start:
                 error("Expected numeric, got %s", toktostr(tok));
         }
     } else if (tok == T_NEWLINE) {
-        /* Nothing to do */
+        return;
     } else {
         error("Expected label-definition or opcode, got %s", toktostr(tok));
     }
@@ -675,18 +675,15 @@ start:
 
 int parse(list *lines) {
     list_node *n;
-    uint16_t instrlen = 0;
 
     for (n = list_get_root(lines); n != NULL; n = n->next) {
-        char *start = n->data;
-        cur_line = start;
-        cur_pos = start;
+        char *start = cur_pos = cur_line = n->data;
         curline++;
 
         assemble_line();        
     }
 
-    return instrlen;
+    return 0;
 }
 
 uint16_t read_numeric(char *op) {
@@ -724,9 +721,8 @@ uint8_t parse_register(char reg) {
 dcpu16token next_token() {
 #define return_(x) /*printf("%d:%s\n", curline, #x);*/ return x;
     /* Skip all spaces TO the next token */
-    while (isspace(*cur_pos)) {
+    while (isspace(*cur_pos))
         cur_pos++;
-    }
 
     /* Test some operators */
     switch (*cur_pos++) {
