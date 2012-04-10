@@ -255,12 +255,14 @@ int main(int argc, char **argv) {
 
     curline = -1;
 
+    /* * * * * * * * * *
+     * Debugging stuff *
     list_node *t;
     for (t = list_get_root(labels); t != NULL; t = t->next) {
         dcpu16label *l = t->data;
 
         printf("Label: '%s' (%04X) (%d)\n", l->label, l->pc, l->defined);
-    }
+    } */
 
     write_memory();
 
@@ -796,8 +798,6 @@ dcpu16token read_string() {
 
     cur_pos++;
     cur_tok.string[i] = '\0';
-
-    printf("Str: '%s'\n", cur_tok.string);
 
     return T_STRING;
 }
