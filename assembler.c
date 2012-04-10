@@ -9,6 +9,11 @@
 #include "linked_list.h"
 
 /*
+ * Maximum length of a label
+ */
+#define LABELMAX 64
+
+/*
  * Tokens
  */
 typedef enum {
@@ -36,9 +41,46 @@ union {
 } cur_tok;
 
 typedef struct {
-    char label[256];
+    char label[MAXLABEL];
     uint16_t pc;
 } dcpu16label;
+
+typedef enum {
+    IMMEDIATE, REFERENCE
+} dcpu16addressing;
+
+typedef enum {
+    LITERAL, LABEL, REGISTER, REGISTER_OFFSET
+} dcpu16operandtype;
+
+typedef struct {
+    /* Reuse operandtype here.  Only allowed values are LITERAL and LABEL */
+    dcpu16operandtype type;
+    dcpu16token register_index;
+
+    union {
+        uint16_t offset;
+        char label[MAXLABEL];
+    };
+} dcpu16registeroffset;
+
+typedef struct {
+    dcpu16addressing addressing;
+    dcpu16operandtype type;
+
+    union {
+        dcpu16token token;
+        uint16_t numeric;
+        char label[MAXLEVEL];
+        dcpu16registeroffset register_offset;
+    };
+} dcpu16operand;
+
+typedef struct {
+    dcpu16token opcode;
+    dcpu16operand a;
+    dcpu16operand b;
+} dcpu16instruction;
 
 void error(const char*, ...);
 
@@ -65,7 +107,7 @@ static int flag_littleendian = 0;
  *   Data sections (dat)
  *     - :data dat "str", 0xXXXXXX, "str2"
  *     - Write the data at that position (data-> beginning of data, dat = macro)
- *   Maybe build a real tokenizer
+ *   Constrain labels to [_a-zA-Z][a-zA-Z0-9_]+ (C-Style)
  */
 int main(int argc, char **argv) {
     int lopts_index = 0;
@@ -235,9 +277,36 @@ char *toktostr(dcpu16token t) {
             return "':'";
         case T_COMMA:
             return "','";
+        case T_POP:
+        case T_PUSH:
+        case T_PEEK:
+            return "stack-operation";
+
+        case T_PC:
+        case T_O:
+        case T_SP:
+            return "status-register";
 
         default:
             return "unknown";
+    }
+}
+
+int is_stack_operation(dcpu16token t) {
+    switch (t) {
+    case T_POP:
+    case T_PEEK:
+    case T_PUSH: return 1;
+    default: return 0;
+    }
+}
+
+int is_status_register(dcpu16token t) {
+    switch (t) {
+    case T_PC:
+    case T_SP:
+    case T_O: return 1;
+    default: return 0;
     }
 }
 
@@ -260,8 +329,6 @@ int is_register(dcpu16token t) {
     case T_A: case T_B: case T_C:
     case T_X: case T_Y: case T_Z:
     case T_I: case T_J:
-    case T_POP: case T_PEEK: case T_PUSH:
-    case T_PC: case T_O: case T_SP:
         return 1;
     default:
         return 0;
@@ -322,6 +389,12 @@ void assemble_operand() {
             if (next_token() != T_RBRACK)
                 error("Expected ']'");
         }
+    } else if (is_stack_operation(tok)) {
+        /* POP, PEEK, PUSH */
+    } else if (is_status_register(tok)) {
+        /* PC, SP, O */
+    } else {
+        error("Expected register, label, numeric or '[', got %s", toktostr(tok));
     }
 }
 
@@ -449,7 +522,7 @@ dcpu16token next_token() {
 
 #define TRY(i) if (!strncasecmp(cur_pos, #i, strlen(#i))) { \
     cur_pos += strlen(#i);                                  \
-    return T_ ## i;                                         \
+    return_(T_ ## i);                                       \
 }
 
     /* Try instructions */
@@ -492,7 +565,7 @@ dcpu16token next_token() {
 
     error("Unrecognized input '%s'", cur_pos);
     return T_NEWLINE;
-#undef return
+#undef return_
 }
 
 dcpu16token parse_opcode(const char *opstr) {
