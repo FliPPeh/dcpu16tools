@@ -797,20 +797,6 @@ dcpu16token next_token() {
 #undef return_
 }
 
-dcpu16token parse_opcode(const char *opstr) {
-    /* Sorry... */
-#define TRY(op) if (!strcasecmp(opstr, #op)) return T_ ## op;
-
-    TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL);
-    TRY(DIV); TRY(MOD); TRY(SHL); TRY(SHR);
-    TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); 
-    TRY(IFN); TRY(IFG); TRY(IFB); TRY(JSR);
-
-#undef TRY
-
-    return -1;
-}
-
 void display_help() {
     printf("Usage: dcpu16asm [OPTIOMS] [FILENAME]\n"
            "where OPTIONS is any of:\n"
