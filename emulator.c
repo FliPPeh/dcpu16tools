@@ -285,6 +285,10 @@ char *addrmeth_to_string(dcpu16 *cpu,
     return str;
 }
 
+int is_basic_instruction(dcpu16opcode op) {
+    return op != JSR;
+}
+
 void inspect_instruction(dcpu16 *cpu, dcpu16instr *instr) {
     const char *opcodename;
     char a[64] = {0};
@@ -310,9 +314,13 @@ void inspect_instruction(dcpu16 *cpu, dcpu16instr *instr) {
     default:  return;
     }
 
-    printf("%s   %s, %s\n", opcodename,
-            addrmeth_to_string(cpu, instr->a_raw, instr->a, a, 64),
-            addrmeth_to_string(cpu, instr->b_raw, instr->b, b, 64));
+    if (is_basic_instruction(instr->opcode))
+        printf("%s   %s, %s\n", opcodename,
+                addrmeth_to_string(cpu, instr->a_raw, instr->a, a, 64),
+                addrmeth_to_string(cpu, instr->b_raw, instr->b, b, 64));
+    else
+        printf("%s   %s\n", opcodename,
+                addrmeth_to_string(cpu, instr->a_raw, instr->a, a, 64));
 }
 
 dcpu16addrmeth dcpu16_get_addressmethod(uint8_t val) {
