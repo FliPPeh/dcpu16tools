@@ -17,6 +17,7 @@
  * Tokens
  */
 typedef enum {
+    T_STRING, /* "string" */
     T_IDENTIFIER, /* An identifier */
     T_NUMBER, /* Any number */
     T_LBRACK, /* '[' */
@@ -46,7 +47,8 @@ static char *cur_pos;
 char *srcfile = "<stdin>";
 
 union {
-    char string[256];
+    /* This should be big enough for any token */
+    char string[1024];
     uint16_t number;
 } cur_tok;
 
@@ -416,6 +418,9 @@ char *toktostr(dcpu16token t) {
         case T_PC: case T_O: case T_SP:
             return "status-register";
 
+        case T_NEWLINE:
+            return "EOL";
+
         default:
             return "unknown";
     }
@@ -665,10 +670,44 @@ start:
             else
                 error("Expected numeric, got %s", toktostr(tok));
         } else if (tok == T_DAT) {
+            /* All of the stuff we are about to read, neatly packed
+             * into words */
+            list_node *p = NULL;
             list *data = list_create();
 
-            next_token();
+            do {
+                if ((tok = next_token()) == T_STRING) {
+                    char *ptr = cur_tok.string;
+
+                    while (*ptr != '\0') {
+                        uint16_t *dat = malloc(sizeof(uint16_t));
+                        *dat = *ptr++;
+
+                        list_push_back(data, dat);
+                    }
+                } else if (tok == T_NUMBER) {
+                    uint16_t *dat = malloc(sizeof(uint16_t));
+                    *dat = cur_tok.number;
+
+                    list_push_back(data, dat);
+                } else {
+                    error("Expected string or numeric, got %s", toktostr(tok));
+                }
+
+                if ((tok = next_token()) == T_COMMA)
+                    continue;
+                else if (tok == T_NEWLINE)
+                    break;
+                else
+                    error("Expected ',' or EOL, got %s", toktostr(tok));
+            } while (1);
+
+            /*
             ram[pc++] = cur_tok.number;
+            */
+            for (p = list_get_root(data); p != NULL; p = p->next) {
+                ram[pc++] = *((uint16_t*)p->data);
+            }
 
             list_dispose(&data, &free);
         }
@@ -692,17 +731,41 @@ int parse(list *lines) {
     return 0;
 }
 
-uint16_t read_numeric(char *op) {
+uint16_t read_numeric() {
     unsigned int num;
 
-    if (!strncmp(op, "0x", 2))
-       sscanf(op, "0x%X", (unsigned int *)&num);
-    else if ((isdigit(*op)))
-       sscanf(op, "%d", (int *)&num);
+    if (!strncmp(cur_pos, "0x", 2))
+       sscanf(cur_pos, "0x%X", (unsigned int *)&num);
+    else if ((isdigit(*cur_pos)))
+       sscanf(cur_pos, "%d", (int *)&num);
     else
-       error("Expected numeric, got '%s'", op);    
+       error("Expected numeric, got '%s'", cur_pos);
+
+    while (isxdigit(*cur_pos) || (*cur_pos == 'x'))
+       cur_pos++;
 
     return num;
+}
+
+dcpu16token read_string() {
+    int i = 0;
+
+    while (*cur_pos != '\"') {
+        if (*cur_pos == '\0')
+           error("Expected '\"', got EOL");
+
+        if (i >= (sizeof(cur_tok.string) - 1))
+            break;
+
+        cur_tok.string[i++] = *cur_pos++;
+    }
+
+    cur_pos++;
+    cur_tok.string[i] = '\0';
+
+    printf("Str: '%s'\n", cur_tok.string);
+
+    return T_STRING;
 }
 
 uint8_t parse_register(char reg) {
@@ -725,7 +788,7 @@ uint8_t parse_register(char reg) {
 }
 
 dcpu16token next_token() {
-#define return_(x) /*printf("%d:%s\n", curline, #x);*/ return x;
+#define return_(x) printf("%d:%s\n", curline, #x); return x;
     /* Skip all spaces TO the next token */
     while (isspace(*cur_pos))
         cur_pos++;
@@ -739,6 +802,7 @@ dcpu16token next_token() {
     case ']': return_(T_RBRACK);
     case '+': return_(T_PLUS);
     case ':': return_(T_COLON);
+    case '\"': return read_string(&cur_pos);
     default: break;
     }
 
@@ -786,10 +850,7 @@ dcpu16token next_token() {
             return parse_register(*(cur_pos - strlength));
         }
     } else if (isdigit(*cur_pos)) {
-        cur_tok.number = read_numeric(cur_pos);
-
-        while (isxdigit(*cur_pos) || (*cur_pos == 'x'))
-            cur_pos++;
+        cur_tok.number = read_numeric();
 
         return_(T_NUMBER);
     }
