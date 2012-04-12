@@ -114,7 +114,7 @@ typedef struct {
     dcpu16token register_index;
 
     union {
-        uint16_t offset;
+        int offset;
         char *label;
     };
 } dcpu16registeroffset;
@@ -125,7 +125,7 @@ typedef struct {
 
     union {
         dcpu16token token;
-        uint16_t numeric;
+        int numeric;
         char *label;
         dcpu16registeroffset register_offset;
     };
@@ -139,7 +139,9 @@ typedef struct {
     dcpu16operand b;
 } dcpu16instruction;
 
+void logmsg(const char*, va_list);
 void error(const char*, ...);
+void warning(const char*, ...);
 
 void display_help();
 void strip_comments(list*);
@@ -150,6 +152,8 @@ void assemble_line();
 dcpu16operand assemble_operand();
 
 int uses_next_word(dcpu16operand*);
+
+void check_instruction(dcpu16instruction*);
 
 dcpu16label *get_labeling(const char*);
 dcpu16label *get_label(const char*);
@@ -181,11 +185,6 @@ void free_label(void *d) {
     free(l);
 }
 
-/*
- * TODO: 
- *   Actually make endianness work
- *   Constrain labels to [_a-zA-Z][a-zA-Z0-9_]+ (C-Style)
- */
 int main(int argc, char **argv) {
     int lopts_index = 0;
     char outfile[256] = "out.hex";
@@ -278,11 +277,38 @@ int main(int argc, char **argv) {
 
 void error(const char *fmt, ...) {
     va_list args;
-    char errmsg[512] = {0};
     va_start(args, fmt);
 
-    vsnprintf(errmsg, sizeof(errmsg) - 1, fmt, args);
+    char *tmp = malloc(strlen(fmt) + strlen("Error: ") + 1);
+    strcpy(tmp, "Error: ");
+    strcat(tmp, fmt);
+
+    logmsg(tmp, args);
+    free(tmp);
+
     va_end(args);
+
+    exit(1);
+}
+
+void warning(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    char *tmp = malloc(strlen(fmt) + strlen("Warning: ") + 1);
+    strcpy(tmp, "Warning: ");
+    strcat(tmp, fmt);
+
+    logmsg(tmp, args);
+    free(tmp);
+
+    va_end(args);
+}
+
+void logmsg(const char *fmt, va_list args) {
+    char errmsg[512] = {0};
+
+    vsnprintf(errmsg, sizeof(errmsg) - 1, fmt, args);
 
     if (curline > 0)
         fprintf(stderr, "%s:%d:%d: %s\n", 
@@ -290,8 +316,7 @@ void error(const char *fmt, ...) {
     else
         fprintf(stderr, "%s: %s\n", srcfile, errmsg);
 
-    /* Let's have the operating system handle our unclosed files */
-    exit(1);
+    return;
 }
 
 void read_file(FILE *f, list *lines) {
@@ -359,6 +384,9 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *wop) {
              * TODO: Short labels
              */
             *wop = l->pc;
+            op->type = LITERAL;
+            op->numeric = l->pc;
+
             return (op->addressing == IMMEDIATE ? 0x1f : 0x1e);
         } else {
             error("Unresolved label '%s'", op->label);
@@ -367,11 +395,13 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *wop) {
         if (op->register_offset.type == LABEL) {
             dcpu16label *l = get_labeling(op->register_offset.label);
 
-            if ((l != NULL) && l->defined)
+            if ((l != NULL) && l->defined) {
                 *wop = l->pc;
-            else
+                op->register_offset.type = LITERAL;
+                op->register_offset.offset = l->pc;
+            } else {
                 error("Unresolved label '%s'", op->register_offset.label);
-
+            }
         } else {
             *wop = op->register_offset.offset;
         }
@@ -388,6 +418,17 @@ void encode(dcpu16instruction *i, uint16_t *wi, uint16_t *wa, uint16_t *wb) {
         *wi = encode_opcode(i->opcode)
             | encode_value(&(i->a), wa) << 4
             | encode_value(&(i->b), wb) << 10;
+}
+
+void check_instruction(dcpu16instruction *instr) {
+    if ((instr->opcode == T_DIV) || (instr->opcode == T_MOD))
+        if ((instr->b.type == LITERAL) && (instr->b.numeric == 0))
+            warning("Division or modulo by zero.");
+
+    if ((instr->opcode >= T_SET) && (instr->opcode <= T_XOR))
+        if ((instr->a.type == LITERAL) && (instr->a.addressing == IMMEDIATE))
+            warning("Trying to assign to a literal value. This will be silently"
+                    " ignored upon execution but still use CPU cycles.");
 }
 
 void write_memory() {
@@ -419,6 +460,9 @@ void write_memory() {
         if (!is_nonbasic_instruction(i->opcode))
             if (uses_next_word(&(i->b)))
                 ram[pc++] = b;
+
+        if (flag_paranoid == 1)
+            check_instruction(i);
     }
 }
 
@@ -695,10 +739,9 @@ start:
         if (tok == T_ORG) {
             if ((tok = next_token()) == T_NUMBER) {
                 if (flag_paranoid && (cur_tok.number < pc)) {
-                    printf("%s:%d:%d: WARNING: new origin precedes old origin! "
-                           "This could cause already written code to be "
-                           "overriden.\n",
-                           srcfile, curline, cur_pos - cur_line);
+                    warning("new origin precedes old origin! "
+                            "This could cause already written code to be "
+                            "overriden.");
                 }
 
                 pc = cur_tok.number;
@@ -779,6 +822,10 @@ uint16_t read_numeric() {
 
     while (isxdigit(*cur_pos) || (*cur_pos == 'x'))
        cur_pos++;
+
+    if (num > 0xFFFF)
+        warning("Literal value %X too big (> 0xFFFF) -- will wrap around.",
+                num);
 
     return num;
 }
