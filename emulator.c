@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <ncurses.h>
+#include <signal.h>
 
 #define RAMSIZE 0x10000
 
@@ -78,17 +79,22 @@ void display_help();
 void emulate(dcpu16*);
 void disassemble(dcpu16*);
 
+void init_gui();
+void update(dcpu16*);
 void updatescreen(dcpu16*);
+
+void hndlresize(int);
 
 static int flag_disassemble = 0;
 static int flag_verbose = 0;
 static int flag_littleendian = 0;
 static int flag_halt = 0;
-static int flag_vga = 0;
 
 /* So we can return a pointer to a literal value */
 static uint16_t literals[32] = {0};
 
+WINDOW *cpuscreen;
+WINDOW *status;
 
 /*
  * TODO: * Improve reading in program file
@@ -105,13 +111,12 @@ int main(int argc, char **argv) {
         {"help",         no_argument, NULL, 'h'},
         {"littleendian", no_argument, NULL, 'l'},
         {"disassemble",  no_argument, NULL, 'd'},
-        {"vga",          no_argument, NULL, 'V'},
         {"halt",         no_argument, NULL, 'H'},
         {NULL,           0,           NULL,  0 }
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "vVdhHl", lopts, &lopts_index);
+        int opt = getopt_long(argc, argv, "vdhHl", lopts, &lopts_index);
 
         if (opt < 0)
             break;
@@ -131,10 +136,6 @@ int main(int argc, char **argv) {
 
         case 'v':
             flag_verbose = 1;
-            break;
-
-        case 'V':
-            flag_vga = 1;
             break;
 
         case 'd':
@@ -164,13 +165,22 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (flag_vga) {
-        initscr();
-        cbreak();
-        nodelay(stdscr, TRUE);
-        noecho();
-        start_color();
+    signal(SIGWINCH, hndlresize);
+
+    initscr();
+    clear();
+    cbreak();
+    start_color();
+    if (!can_change_color()) {
+        mvprintw(0, 0, "Your terminal does not support 256 colors, the screen "
+                       "output will not look like it's supposed to look like!");
     }
+
+    nodelay(stdscr, TRUE);
+    noecho();
+    keypad(stdscr, TRUE);
+
+    init_gui();
 
     /* Read program into memory */
     do {
@@ -228,10 +238,24 @@ int main(int argc, char **argv) {
         free(programcode);
     }
 
-    if (flag_vga)
-        endwin();
+    delwin(cpuscreen);
+    endwin();
 
     return 0;
+}
+
+void init_gui() {
+    init_pair(1, COLOR_BLUE, COLOR_WHITE);
+
+    cpuscreen = newwin(14, 34, 2, 1);
+    status = newwin(14, 24, 2, 37);
+
+    wbkgd(status, COLOR_PAIR(1));
+    wbkgd(cpuscreen, COLOR_PAIR(1));
+
+    refresh();
+    wrefresh(cpuscreen);
+
 }
 
 void display_help() {
@@ -542,25 +566,64 @@ void dcpu16_step(dcpu16 *cpu) {
 
 }
 
+int map_ncurstohex(int v) {
+    int x1 = 0, x2 = 0xFF;
+    int n1 = 0, n2 = 1000;
+
+    return (v-x1)/(x2-x1) * (n2-n1) + n1;
+}
+
 void emulate(dcpu16 *cpu) {
     uint16_t last_pc = 0xFFFF;
     uint16_t keybuffer = 0;
-    char c;
+    int c;
+    int f,b;
+
+    curs_set(0);
+
+    init_color(127, 0,    0,    0);
+    init_color(128, 0,    0,    666);
+    init_color(129, 0,    666,  0);
+    init_color(130, 0,    666,  666);
+    init_color(131, 666,  0,    0);
+    init_color(132, 666,  0,    666);
+    init_color(133, 666,  333,  0);
+    init_color(134, 1000, 1000, 1000);
+    init_color(135, 333,  333,  333);
+    init_color(136, 333,  333,  1000);
+    init_color(137, 333,  1000, 333);
+    init_color(138, 333,  1000, 1000);
+    init_color(139, 1000, 333,  1000);
+    init_color(140, 1000, 1000, 333);
+    init_color(141, 1000, 1000, 1000);
+
+
+    /* Initialize all possible color combinations */
+    for (f = 0; f < 16; ++f)
+        for (b = 0; b < 16; b++)
+                init_pair(((f << 4) | b) + 16, f+127, b+127);
 
     while (cpu->pc < RAMSIZE) {
         if (flag_verbose)
             dump_cpu(cpu);
 
         if ((c = getch()) > 0) {
+            switch (c) {
+            case KEY_LEFT: c = 1; break;
+            case KEY_RIGHT: c = 2; break;
+            case KEY_UP: c = 3; break;
+            case KEY_DOWN: c = 4; break;
+            }
+
             cpu->ram[0x9000 + (keybuffer++ % 0x1)] = c;
         }
 
         dcpu16_step(cpu);
 
-        updatescreen(cpu);
+        update(cpu);
 
-        /* Add clock cycles, then enable
-        usleep(10); */
+        /* Add clock cycles, then enable */
+        usleep(10);
 
         if ((last_pc == cpu->pc) && flag_halt)
             break;
@@ -569,38 +632,76 @@ void emulate(dcpu16 *cpu) {
     }
 }
 
+void hndlresize(int sig) {
+    wresize(stdscr, LINES, COLS);
+
+    clear();
+}
+
+void updatestatus(dcpu16 *cpu) {
+    box(status, 0, 0);
+    mvwprintw(status, 0, 2, " CPU ");
+
+    mvwprintw(status, 1, 2, "PC: %04X    SP: %04X", cpu->pc, cpu->sp);
+    mvwprintw(status, 2, 2, " O: %04X", cpu->o);
+
+    mvwprintw(status, 4, 2, "A: %04X", cpu->registers[0]);
+    mvwprintw(status, 5, 2, "B: %04X", cpu->registers[1]);
+    mvwprintw(status, 6, 2, "C: %04X", cpu->registers[2]);
+    mvwprintw(status, 7, 2, "X: %04X", cpu->registers[3]);
+    mvwprintw(status, 8, 2, "Y: %04X", cpu->registers[4]);
+    mvwprintw(status, 9, 2, "Z: %04X", cpu->registers[5]);
+    mvwprintw(status, 10, 2, "I: %04X", cpu->registers[6]);
+    mvwprintw(status, 11, 2, "J: %04X", cpu->registers[7]);
+
+    wrefresh(status);
+}
+
+void update(dcpu16 *cpu) {
+    mvprintw(0, 0, "dcpu16emu");
+    mvhline(1, 0, ACS_BULLET, 10);
+
+
+    updatescreen(cpu);
+    updatestatus(cpu);
+}
+
 void updatescreen(dcpu16 *cpu) {
     uint16_t x, y;
     uint16_t *vram = cpu->ram + 0x8000;
 
-    //clear();
+    box(cpuscreen, 0, 0);
+    mvwprintw(cpuscreen, 0, 2, " Screen ");
 
     for (x = 0; x < 32; ++x) {
-        for (y = 0; y < 13; ++y) {
-            char asciival = (vram[y * 32 + x] & 0x00FF);
-            uint8_t fg = (vram[y * 32 + x] & 0xF000) >> 12;
-            uint8_t bg = (vram[y * 32 + x] & 0x0F00) >> 8;
+        for (y = 0; y < 12; ++y) {
+            uint16_t word = vram[y * 32 + x];
+            char asciival = word & 0x7F;
+
+            uint8_t fg = (word & 0xF000) >> 12;
+            uint8_t bg = (word & 0x0F00) >> 8;
+            int id = ((fg << 4) | bg) + 16;
 
             /* Do something with fb and bg... */
-            move(y, x);
-
-            if (isprint(asciival))
-                addch(asciival);
-            else
-                addch(' ');
+            wmove(cpuscreen, y + 1, x + 1);
+            if (isprint(asciival)) {
+                mvwaddch(cpuscreen, y+1, x+1, asciival | COLOR_PAIR(id));
+            } else {
+                mvwaddch(cpuscreen, y+1, x+1, ' ' | COLOR_PAIR(id));
+            }
         }
     }
 
-    refresh();
+    wrefresh(cpuscreen);
 }
 
 void disassemble(dcpu16 *cpu) {
+    endwin();
+
     dcpu16instr instr = {0};
 
-    while (instr.opcode != INV) {
+    while (cpu->pc < 0x10000) {
         dcpu16_fetch(&instr, cpu);
-
-        if (flag_verbose)
-            inspect_instruction(cpu, &instr);
+        inspect_instruction(cpu, &instr);
     }
 }
