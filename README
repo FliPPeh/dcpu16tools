@@ -17,11 +17,11 @@ implemented:
 
      * Some slighty fancy output if verbose mode is enabled
 
-     * PLANNED: Video emulation via ncurses
+     * Video emulation via ncurses
+
+     * Hexdump-like input
 
      * PLANNED: Actual clock cycle emulation
-
-     * PLANNED: Hexdump-like input
 
   Assembler:
      * "Above average" error messages (and warnings if "--paranoid" is given)
@@ -29,7 +29,7 @@ implemented:
      * Label support as literals, references and offset registers
          (i.e. JSR label, JSR [label], JSR [label + A])
 
-     * Data sections
+     * Data sections (".dat" can also be written as "dat")
          (i.e. :data .dat "Hello, World!", 0)
 
      * Origin offsets
@@ -38,12 +38,12 @@ implemented:
            ADD A,          1
            SET [vram + A], 0x43
 
-           .org 0x8000
+           .org 0x8000    ; can also be written as "org"
            :vram
 
-     * PLANNED: All the endian goodness.
+     * Can generate little and big endian code.
 
-     * PLANNED: Hexdump-like output format (Somewhat human readable)
+     * Hexdump-like output format
 
 
 All programs are written to be easily modified to accomodate DCPU-16 spec
