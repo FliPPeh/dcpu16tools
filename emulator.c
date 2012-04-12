@@ -25,6 +25,8 @@
 #include <ncurses.h>
 #include <signal.h>
 
+#include "hexdump.h"
+
 #define RAMSIZE 0x10000
 
 typedef enum {
@@ -87,7 +89,7 @@ void hndlresize(int);
 
 static int flag_disassemble = 0;
 static int flag_verbose = 0;
-static int flag_littleendian = 0;
+static int flag_be = 0;
 static int flag_halt = 0;
 
 /* So we can return a pointer to a literal value */
@@ -101,6 +103,7 @@ WINDOW *status;
  *       * Emulate clockrate (100 kHz) and clock cycles
  */
 int main(int argc, char **argv) {
+    int i;
     int lopts_index = 0;
     FILE *source = stdin;
     uint8_t *program = NULL;
@@ -109,14 +112,14 @@ int main(int argc, char **argv) {
     static struct option lopts[] = {
         {"verbose",      no_argument, NULL, 'v'},
         {"help",         no_argument, NULL, 'h'},
-        {"littleendian", no_argument, NULL, 'l'},
+        {"bigendian",    no_argument, NULL, 'b'},
         {"disassemble",  no_argument, NULL, 'd'},
         {"halt",         no_argument, NULL, 'H'},
         {NULL,           0,           NULL,  0 }
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "vdhHl", lopts, &lopts_index);
+        int opt = getopt_long(argc, argv, "vdhHb", lopts, &lopts_index);
 
         if (opt < 0)
             break;
@@ -142,8 +145,8 @@ int main(int argc, char **argv) {
             flag_disassemble = 1;
             break;
 
-        case 'l':
-            flag_littleendian = 1;
+        case 'b':
+            flag_be = 1;
             break;
 
         case '?':
@@ -182,61 +185,23 @@ int main(int argc, char **argv) {
 
     init_gui();
 
-    /* Read program into memory */
-    do {
-        uint8_t buf[256];
-        size_t n = 0;
+    dcpu16 cpu;
+    dcpu16_init(&cpu);
 
-        if ((n = fread(buf, sizeof(uint8_t), sizeof(buf), source)) > 0) {
-            program = realloc(program, programsize + n * sizeof(uint8_t));
-            if (program != NULL) {
-                memcpy(program + programsize, buf, n * sizeof(uint8_t));
-                programsize = programsize + n * sizeof(uint8_t);
-            } else {
-                printf("reallocation failed -- aborting\n");
-                return 1;
-            }
-        } else {
-            break;
-        }
-    } while (!feof(source));
+    /* Read program into memory */
+    read_hexdump(source, flag_be ? BIGENDIAN : LITTLEENDIAN, cpu.ram, RAMSIZE);
 
     if (source != stdin)
         fclose(source);
 
-    /* Every pair of bytes we read has to be converted to a 16 bit integer.
-     * We could not do this by reading in an unsigned short because system
-     * endianness will affect the outcome. */
-    if (programsize % 2 != 0) {
-        fprintf(stderr, "invalid program file (uneven size) -- aborting\n");
-        free(program);
-        return 1;
-    } else {
-        uint16_t *programcode = malloc((programsize / 2) * sizeof(uint16_t));
-        int i = 0;
+    /* Initialize literal table */
+    for (i = 0; i < 32; ++i)
+        literals[i] = i;
 
-        for (i = 0; i < programsize / 2; ++i)
-            if (flag_littleendian)
-                programcode[i] = (program[i*2 + 1] << 8) + program[i*2];
-            else
-                programcode[i] = (program[i*2] << 8) + program[i*2 + 1];
-    
-        dcpu16 cpu;
-        dcpu16_init(&cpu);
-        dcpu16_loadprogram(&cpu, programcode, programsize / 2);
-
-        /* Initialize literal table */
-        for (i = 0; i < 32; ++i)
-            literals[i] = i;
-
-        if (!flag_disassemble)
-            emulate(&cpu);
-        else
-            disassemble(&cpu);
-
-        free(program);
-        free(programcode);
-    }
+    if (!flag_disassemble)
+        emulate(&cpu);
+    else
+        disassemble(&cpu);
 
     delwin(cpuscreen);
     endwin();
@@ -263,9 +228,9 @@ void display_help() {
            "where OPTIONS is any of:\n"
            "  -h, --help          Display this help\n"
            "  -v, --verbose       Enable verbosity\n"
-           "  -l, --littleendian  Interpret the words in the source file as "
-                                 "little endian\n"
-           "                      rather than big endian.\n"
+           "  -b, --bigendian     Interpret the words in the source file as "
+                                 "big endian\n"
+           "                      rather than little endian.\n"
            "  -d, --disassemble   Print the instructions that make up "
                                  "the program instead\n"
            "                      of executing it.  Origin offsets, labels"
@@ -282,10 +247,6 @@ void display_help() {
 
 void dcpu16_init(dcpu16 *cpu) {
     memset(cpu, 0, sizeof(*cpu));
-}
-
-void dcpu16_loadprogram(dcpu16 *cpu, uint16_t *program, uint16_t n) {
-    memcpy(cpu->ram, program, n*2 > RAMSIZE ? RAMSIZE : n*2);
 }
 
 static char *val_to_registername(uint8_t r) {
@@ -522,55 +483,16 @@ void dcpu16_execute(dcpu16instr *instr, dcpu16 *cpu) {
         *a = result;
 }
 
-void dump_cpu(dcpu16 *cpu) {
-    int i;
-    printf("----------------------------------------------------------------------------\n"
-           "%04X | %04X | %04X | %04X | %04X | %04X | %04X | %04X | %04X | %04X | %04X |\n"
-           "A    | B    | C    | X    | Y    | Z    | I    | J    | O    | SP   | PC   |\n"
-           "----------------------------------------------------------------------------\n",
-           cpu->registers[A], cpu->registers[B], cpu->registers[C],
-           cpu->registers[X], cpu->registers[Y], cpu->registers[Z],
-           cpu->registers[I], cpu->registers[J], cpu->o, cpu->sp, cpu->pc);
-
-    printf("Program:\n");
-
-    for (i = 0; i < 0x100; i += 8) {
-        int j;
-
-        printf("%04X:  ", i);
-        for (j = i; j < i+8; ++j)
-            if (j >= 0x100)
-                break;
-            else
-                if (cpu->pc == j)
-                    printf(" \x1B[31m%04X\x1B[0m", cpu->ram[j]);
-                else
-                    printf(" %04X", cpu->ram[j]);
-
-        printf("\n");
-    }
-}
-
 void dcpu16_step(dcpu16 *cpu) {
     dcpu16instr instr = {0};
 
     dcpu16_fetch(&instr, cpu);
-
-    if (flag_verbose)
-        inspect_instruction(cpu, &instr);
 
     if (!cpu->skip_next)
         dcpu16_execute(&instr, cpu);
     else
         cpu->skip_next = 0;
 
-}
-
-int map_ncurstohex(int v) {
-    int x1 = 0, x2 = 0xFF;
-    int n1 = 0, n2 = 1000;
-
-    return (v-x1)/(x2-x1) * (n2-n1) + n1;
 }
 
 void emulate(dcpu16 *cpu) {
@@ -597,16 +519,12 @@ void emulate(dcpu16 *cpu) {
     init_color(140, 1000, 1000, 333);
     init_color(141, 1000, 1000, 1000);
 
-
     /* Initialize all possible color combinations */
     for (f = 0; f < 16; ++f)
         for (b = 0; b < 16; b++)
                 init_pair(((f << 4) | b) + 16, f+127, b+127);
 
     while (cpu->pc < RAMSIZE) {
-        if (flag_verbose)
-            dump_cpu(cpu);
-
         if ((c = getch()) > 0) {
             switch (c) {
             case KEY_LEFT: c = 1; break;

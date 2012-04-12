@@ -26,11 +26,17 @@
 #include <stdint.h>
 
 #include "linked_list.h"
+#include "hexdump.h"
 
 /*
  * Maximum length of a label
  */
 #define MAXLABEL 64
+
+/*
+ * RAM size (per specification
+ */
+#define RAMSIZE 0x10000
 
 /*
  * Tokens
@@ -127,6 +133,7 @@ typedef struct {
 
 typedef struct {
     uint16_t pc;
+    int line;
     dcpu16token opcode;
     dcpu16operand a;
     dcpu16operand b;
@@ -155,7 +162,7 @@ void write_memory();
 /*
  * Options and output parameters
  */
-static int flag_littleendian = 0;
+static int flag_be = 0;
 static int flag_paranoid = 0;
 static list *labels;
 static list *instructions;
@@ -181,7 +188,7 @@ void free_label(void *d) {
  */
 int main(int argc, char **argv) {
     int lopts_index = 0;
-    char outfile[256] = "out.bin";
+    char outfile[256] = "out.hex";
 
     FILE *input = stdin;
     FILE *output = NULL;
@@ -191,14 +198,14 @@ int main(int argc, char **argv) {
     instructions = list_create();
 
     static struct option lopts[] = {
-        {"littleendian", no_argument, NULL, 'l'},
-        {"help",         no_argument, NULL, 'h'},
-        {"paranoid",     no_argument, NULL, 'p'},
-        {NULL,           0,           NULL,  0 }
+        {"bigendian", no_argument, NULL, 'b'},
+        {"help",      no_argument, NULL, 'h'},
+        {"paranoid",  no_argument, NULL, 'p'},
+        {NULL,        0,           NULL,  0 }
     };
 
     for (;;) {
-        int opt = getopt_long(argc, argv, "lho:p", lopts, &lopts_index);
+        int opt = getopt_long(argc, argv, "bho:p", lopts, &lopts_index);
 
         if (opt < 0)
             break;
@@ -208,7 +215,7 @@ int main(int argc, char **argv) {
             break;
 
         case 'l':
-            flag_littleendian = 1;
+            flag_be = 1;
             break;
 
         case 'h':
@@ -252,21 +259,10 @@ int main(int argc, char **argv) {
 
     /* Parse the file, storing labels and instructions as we go */
     parse(file_contents);
-
-    curline = -1;
-
-    /* * * * * * * * * *
-     * Debugging stuff *
-    list_node *t;
-    for (t = list_get_root(labels); t != NULL; t = t->next) {
-        dcpu16label *l = t->data;
-
-        printf("Label: '%s' (%04X) (%d)\n", l->label, l->pc, l->defined);
-    } */
-
+    cur_line = cur_pos = NULL;
     write_memory();
 
-    printf("Wrote %d words.\n", fwrite(ram, sizeof(uint16_t), pc, output));
+    write_hexdump(output, flag_be ? BIGENDIAN : LITTLEENDIAN, ram, RAMSIZE);
     fclose(output);
 
     /* Release resources */
@@ -405,6 +401,9 @@ void write_memory() {
     for (n = list_get_root(instructions); n != NULL; n = n->next) {
         uint16_t op, a, b;
         dcpu16instruction *i = n->data;
+
+        /* For the error() command */
+        curline = i->line;
 
         pc = i->pc;
         encode(i, &op, &a, &b);
@@ -686,6 +685,7 @@ start:
         memcpy(newinstr, &instr, sizeof(dcpu16instruction));
 
         newinstr->pc = pc;
+        newinstr->line = curline;
 
         list_push_back(instructions, newinstr);
 
@@ -917,8 +917,8 @@ void display_help() {
     printf("Usage: dcpu16asm [OPTIOMS] [FILENAME]\n"
            "where OPTIONS is any of:\n"
            "  -h, --help          Display this help\n"
-           "  -l, --littleendian  Generate little endian bytecode "
-                                 "rather than big endian\n"
+           "  -b, --bigendian     Generate big endian code "
+                                 "rather than little endian\n"
            "  -p, --paranoid      Turn on warnings about non-fatal (but "
                                  "potentially harmful) problems\n"
            "  -o FILENAME         Write output to FILENAME instead of "
