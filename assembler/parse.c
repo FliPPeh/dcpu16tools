@@ -3,12 +3,12 @@
 #include <string.h>
 #include <strings.h>
 
-#include "dcpu16.h"
 #include "util.h"
-#include "types.h"
 #include "label.h"
 #include "parse.h"
 #include "../common/linked_list.h"
+#include "../common/dcpu16.h"
+#include "../common/types.h"
 
 int curline = 0;
 char *cur_line = NULL;

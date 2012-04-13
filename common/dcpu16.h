@@ -2,7 +2,6 @@
 #define DCPU16_H
 
 #include "types.h"
-#include "parse.h"
 
 
 int uses_next_word(dcpu16operand*);

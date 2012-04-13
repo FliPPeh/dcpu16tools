@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "types.h"
+#include "../common/types.h"
 #include "../common/linked_list.h"
 
 dcpu16label *getlabel(list *labels, const char *label) {
