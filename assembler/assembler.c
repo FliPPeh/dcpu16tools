@@ -24,9 +24,14 @@
 #include <getopt.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <string.h>
 
-#include "linked_list.h"
-#include "hexdump.h"
+#include "label.h"
+#include "parse.h"
+#include "util.h"
+#include "dcpu16.h"
+#include "../common/linked_list.h"
+#include "../common/hexdump.h"
 
 /*
  * Maximum length of a label
@@ -38,145 +43,24 @@
  */
 #define RAMSIZE 0x10000
 
-/*
- * Tokens
- */
-typedef enum {
-    T_STRING, /* "string" */
-    T_IDENTIFIER, /* An identifier */
-    T_NUMBER, /* Any number */
-    T_LBRACK, /* '[' */
-    T_RBRACK, /* ']' */
-    T_COMMA,  /* ',' */
-    T_COLON,  /* ':' */
-    T_PLUS,   /* '+' */
-    T_A, T_B, T_C, T_X, T_Y, T_Z, T_I, T_J, /* Registers */
-    T_POP, T_PEEK, T_PUSH, /* POP, PEEK, PUSH */
-    T_SP, T_PC, T_O,
-    
-    T_SET, T_ADD, T_SUB, T_MUL, T_DIV, T_MOD, T_SHL,
-    T_SHR, T_AND, T_BOR, T_XOR, T_IFE, T_IFN, T_IFG, T_IFB,
 
-    T_JSR,
-    T_ORG, T_DAT,  /* Assembler macros */
-    T_NEWLINE
-} dcpu16token;
-
-
-/*
- * Parser state
- */
-static int curline = 0;
-static char *cur_line;
-static char *cur_pos;
-char *srcfile = "<stdin>";
-
-union {
-    /* This should be big enough for any token */
-    char string[1024];
-    uint16_t number;
-} cur_tok;
-
-/*
- * An entry in the global label list
- */
-typedef struct {
-    char *label;
-    uint16_t pc;
-
-    int defined;
-} dcpu16label;
-
-/*
- * Specifies whether an operand is an immediate
- * value or a reference inside the RAM at that
- * position
- */
-typedef enum {
-    IMMEDIATE, REFERENCE
-} dcpu16addressing;
-
-/*
- * Specifies the type of operand, where
- *    LITERAL           = 0x0000 - 0xFFFFF
- *    LABEL             = an alphanumeric alies for the PC it was defined at
- *    REGISTER          = A, B, C, X, Y, Z, I, J
- *                          also POP, PUSH, PEEK, PC, SP, O in immediate context
- *    REGISTER_OFFSET   = Only valid as reference: [A + 0xFFFF]
- */
-typedef enum {
-    LITERAL, LABEL, REGISTER, REGISTER_OFFSET
-} dcpu16operandtype;
-
-typedef struct {
-    /* Reuse operandtype here.  Only allowed values are LITERAL and LABEL */
-    dcpu16operandtype type;
-    dcpu16token register_index;
-
-    union {
-        int offset;
-        char *label;
-    };
-} dcpu16registeroffset;
-
-typedef struct {
-    dcpu16addressing addressing;
-    dcpu16operandtype type;
-
-    union {
-        dcpu16token token;
-        int numeric;
-        char *label;
-        dcpu16registeroffset register_offset;
-    };
-} dcpu16operand;
-
-typedef struct {
-    uint16_t pc;
-    int line;
-    dcpu16token opcode;
-    dcpu16operand a;
-    dcpu16operand b;
-} dcpu16instruction;
-
-void logmsg(const char*, va_list);
-void error(const char*, ...);
-void warning(const char*, ...);
 
 void display_help();
-void strip_comments(list*);
-
-void read_file(FILE*, list*);
-
-void assemble_line();
-dcpu16operand assemble_operand();
-
-int uses_next_word(dcpu16operand*);
-
 void check_instruction(dcpu16instruction*);
 
-dcpu16label *get_labeling(const char*);
-dcpu16label *get_label(const char*);
-
-int parse(list*);
-dcpu16token next_token();
-
-void write_memory();
+void write_memory(list*, list*);
 
 /*
  * Options and output parameters
  */
-static int flag_be = 0;
-static int flag_paranoid = 0;
-static list *labels;
-static list *instructions;
-static uint16_t ram[0x10000];
+int flag_be = 0;
+int flag_paranoid = 0;
+list *labels;
+list *instructions;
+uint16_t ram[0x10000];
 
-/*
- * To keep track of label positions
- */
-static uint16_t pc;
-
+extern char *srcfile, *cur_line, *cur_pos;
+extern int curline;
 
 void free_label(void *d) {
     dcpu16label *l = d;
@@ -192,7 +76,6 @@ int main(int argc, char **argv) {
     FILE *input = stdin;
     FILE *output = NULL;
 
-    list *file_contents = list_create();
     labels = list_create();
     instructions = list_create();
 
@@ -213,7 +96,7 @@ int main(int argc, char **argv) {
         case 0:
             break;
 
-        case 'l':
+        case 'b':
             flag_be = 1;
             break;
 
@@ -244,7 +127,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if ((output = fopen(outfile, "wb+")) == NULL) {
+    if ((output = fopen(outfile, "w+")) == NULL) {
         fprintf(stderr, "Unable to open '%s' -- aborting\n", outfile);
 
         if (input != stdin)
@@ -253,20 +136,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Read and cleanup */
-    read_file(input, file_contents);
-
     /* Parse the file, storing labels and instructions as we go */
-    parse(file_contents);
+    parsefile(input, instructions, labels);
+
     cur_line = cur_pos = NULL;
-    write_memory();
+    write_memory(instructions, labels);
 
     write_hexdump(output, flag_be ? BIGENDIAN : LITTLEENDIAN, ram, RAMSIZE);
     fclose(output);
 
     /* Release resources */
     list_dispose(&labels, &free_label);
-    list_dispose(&file_contents, &free);
     list_dispose(&instructions, &free);
 
     if (input != stdin)
@@ -275,77 +155,22 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-void error(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-
-    char *tmp = malloc(strlen(fmt) + strlen("Error: ") + 1);
-    strcpy(tmp, "Error: ");
-    strcat(tmp, fmt);
-
-    logmsg(tmp, args);
-    free(tmp);
-
-    va_end(args);
-
-    exit(1);
+void display_help() {
+    printf("Usage: dcpu16asm [OPTIOMS] [FILENAME]\n"
+           "where OPTIONS is any of:\n"
+           "  -h, --help          Display this help\n"
+           "  -b, --bigendian     Generate big endian code "
+                                 "rather than little endian\n"
+           "  -p, --paranoid      Turn on warnings about non-fatal (but "
+                                 "potentially harmful) problems\n"
+           "  -o FILENAME         Write output to FILENAME instead of "
+                                 "\"out.bin\"\n"
+           "\n"
+           "FILENAME, if given, is the source file to read instructions from.\n"
+           "Defaults to standard input if not given or filename is \"-\"\n");
 }
 
-void warning(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
 
-    char *tmp = malloc(strlen(fmt) + strlen("Warning: ") + 1);
-    strcpy(tmp, "Warning: ");
-    strcat(tmp, fmt);
-
-    logmsg(tmp, args);
-    free(tmp);
-
-    va_end(args);
-}
-
-void logmsg(const char *fmt, va_list args) {
-    char errmsg[512] = {0};
-
-    vsnprintf(errmsg, sizeof(errmsg) - 1, fmt, args);
-
-    if (curline > 0)
-        fprintf(stderr, "%s:%d:%d: %s\n", 
-                srcfile, curline, cur_pos - cur_line, errmsg);
-    else
-        fprintf(stderr, "%s: %s\n", srcfile, errmsg);
-
-    return;
-}
-
-void read_file(FILE *f, list *lines) {
-    do {
-        /* 1024 characters should do */
-        char buffer[1024] = {0};
-        char *loc = NULL;
-
-        if (fgets(buffer, sizeof(buffer), f) != NULL) {
-            int n;
-            if ((loc = strstr(buffer, ";")) != NULL) {
-                *loc = '\n';
-
-                while (buffer < loc && isspace(*loc))
-                    loc--;
-
-                *(++loc) = '\0';
-            }
-
-            n = strlen(buffer);
-            
-            char *line = malloc(n * sizeof(char) + 1);
-            memset(line, 0, n * sizeof(char) + 1);
-            memcpy(line, buffer, n * sizeof(char));
-
-            list_push_back(lines, line);
-        }
-    } while (!feof(f));
-}
 
 uint16_t encode_opcode(dcpu16token t) {
     if (is_nonbasic_instruction(t)) {
@@ -354,9 +179,11 @@ uint16_t encode_opcode(dcpu16token t) {
     } else {
         return (t - T_SET) + 1;
     }
+
+    return 0;
 }
 
-uint16_t encode_value(dcpu16operand *op, uint16_t *wop) {
+uint16_t encode_value(list *labels, dcpu16operand *op, uint16_t *wop) {
     if (op->type == REGISTER) {
         if (is_register(op->token))
             return (op->token - T_A) + (op->addressing == REFERENCE 
@@ -378,22 +205,31 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *wop) {
             return 0x1e;
         }
     } else if (op->type == LABEL) {
-        dcpu16label *l = get_labeling(op->label);
+        dcpu16label *l = getlabel(labels, op->label);
         if ((l != NULL) && l->defined) {
+            dcpu16addressing a = op->addressing;
             /*
              * TODO: Short labels
              */
             *wop = l->pc;
+
+            /*
+             * The next line is a very ugly hack to force the assembler to
+             * write the resolved label into the next word even if it
+             * resolves to < 0x20. This is so it can later use the numerical
+             * when looking for warnings
+             */
+            op->addressing = REFERENCE;
             op->type = LITERAL;
             op->numeric = l->pc;
 
-            return (op->addressing == IMMEDIATE ? 0x1f : 0x1e);
+            return (a == IMMEDIATE ? 0x1f : 0x1e);
         } else {
             error("Unresolved label '%s'", op->label);
         }
     } else {
         if (op->register_offset.type == LABEL) {
-            dcpu16label *l = get_labeling(op->register_offset.label);
+            dcpu16label *l = getlabel(labels, op->register_offset.label);
 
             if ((l != NULL) && l->defined) {
                 *wop = l->pc;
@@ -408,16 +244,19 @@ uint16_t encode_value(dcpu16operand *op, uint16_t *wop) {
 
         return (op->register_offset.register_index - T_A) + 0x10;
     }
+
+    return 0;
 }
 
-void encode(dcpu16instruction *i, uint16_t *wi, uint16_t *wa, uint16_t *wb) {
+void encode(dcpu16instruction *i, uint16_t *wi, uint16_t *wa, uint16_t *wb,
+            list *labels) {
     if (is_nonbasic_instruction(i->opcode))
         *wi = 0x00 | encode_opcode(i->opcode) << 4
-                   | encode_value(&(i->a), wa) << 10;
+                   | encode_value(labels, &(i->a), wa) << 10;
     else
         *wi = encode_opcode(i->opcode)
-            | encode_value(&(i->a), wa) << 4
-            | encode_value(&(i->b), wb) << 10;
+            | encode_value(labels, &(i->a), wa) << 4
+            | encode_value(labels, &(i->b), wb) << 10;
 }
 
 void check_instruction(dcpu16instruction *instr) {
@@ -431,7 +270,7 @@ void check_instruction(dcpu16instruction *instr) {
                     " ignored upon execution but still use CPU cycles.");
 }
 
-void write_memory() {
+void write_memory(list *instructions, list *labels) {
     /*
      * Purposeful shadowing of the global 'pc'
      */
@@ -447,15 +286,16 @@ void write_memory() {
         curline = i->line;
 
         pc = i->pc;
-        encode(i, &op, &a, &b);
+        encode(i, &op, &a, &b, labels);
 
         /*
          * TODO: Endianness
          */
         ram[pc++] = op;
 
-        if (uses_next_word(&(i->a)))
+        if (uses_next_word(&(i->a))) {
             ram[pc++] = a;
+        }
 
         if (!is_nonbasic_instruction(i->opcode))
             if (uses_next_word(&(i->b)))
@@ -466,511 +306,3 @@ void write_memory() {
     }
 }
 
-char *toktostr(dcpu16token t) {
-    switch (t) {
-        case T_A: case T_B: case T_C: case T_X: case T_Y: case T_Z:
-        case T_I: case T_J:
-            return "register";
-        case T_IDENTIFIER:
-            return "label";
-        case T_NUMBER:
-            return "numeric";
-        case T_LBRACK:
-            return "'['";
-        case T_RBRACK:
-            return "']'";
-        case T_COLON:
-            return "':'";
-        case T_COMMA:
-            return "','";
-        case T_POP: case T_PUSH: case T_PEEK:
-            return "stack-operation";
-
-        case T_PC: case T_O: case T_SP:
-            return "status-register";
-
-        case T_NEWLINE:
-            return "EOL";
-
-        default:
-            return "unknown";
-    }
-}
-
-int is_stack_operation(dcpu16token t) {
-    return ((t >= T_POP) && (t <= T_PUSH));
-}
-
-int is_status_register(dcpu16token t) {
-    return ((t >= T_SP) && (t <= T_O));
-}
-
-int is_instruction(dcpu16token t) {
-    return ((t >= T_SET) && (t <= T_JSR));
-}
-
-int is_macro(dcpu16token t) {
-    return ((t >= T_ORG) && (t <= T_DAT));
-}
-
-int is_nonbasic_instruction(dcpu16token t) {
-    return is_instruction(t) && (t == T_JSR);
-}
-
-int is_register(dcpu16token t) {
-    return ((t >= T_A) && (t <= T_J));
-}
-
-dcpu16label *get_labeling(const char *label) {
-    list_node *node = NULL;
-
-    for (node = list_get_root(labels); node != NULL; node = node->next) {
-        dcpu16label *ptr = node->data;
-
-        if (!(strcmp(ptr->label, label)))
-            return ptr;
-    }
-    
-    return NULL;
-}
-
-dcpu16label *get_label(const char *label) {
-    dcpu16label *ptr = get_labeling(label);
-    
-    if (ptr != NULL)
-        return ptr;
-
-    /*
-     * Label was not found, so we create it
-     */
-    ptr = malloc(sizeof(dcpu16label));
-    ptr->label = malloc(strlen(label) * sizeof(char) + 1);
-    strcpy(ptr->label, label);
-
-    ptr->pc = 0;
-    ptr->defined = 0;
-
-    list_push_back(labels, ptr);
-
-    return ptr;
-}
-
-dcpu16operand assemble_operand() {
-    dcpu16operand op = {0};
-    dcpu16token tok;
-
-    op.addressing = IMMEDIATE;
-
-    if ((tok = next_token()) == T_IDENTIFIER) {
-        /* label */
-        op.type = LABEL;
-        op.label = get_label(cur_tok.string)->label;
-    } else if (tok == T_NUMBER) {
-        /* numeric */
-        op.type = LITERAL;
-        op.numeric = cur_tok.number;
-    } else if (is_register(tok) || is_status_register(tok)
-                                || is_stack_operation(tok)) {
-        /* register */
-
-        /* 
-         * For all intents and purposes, stack operations, registers and
-         * status registers are equivalent in usage for immediate addressing,
-         * so we might as well classify them all as REGISTER
-         */
-        op.type = REGISTER;
-        op.token = tok;
-    } else if (tok == T_LBRACK) {
-        /* [reference] */
-        dcpu16token a = next_token();
-
-        op.addressing = REFERENCE;
-
-        if (a == T_NUMBER) {
-            /* [numeric] */
-            op.type = LITERAL;
-            op.numeric = cur_tok.number;
-        } else if (is_register(a)) {
-            /* [register] */
-            op.type = REGISTER;
-            op.token = a;
-        } else if (a == T_IDENTIFIER) {
-            /* [label] */
-            op.type = LABEL;
-            op.label = get_label(cur_tok.string)->label;
-        } else {
-            error("Expected numeric, register or label, got %s", toktostr(a));
-        }
-
-        /* First part parsed correctly so far, now either ']' or '+'
-         * follows */
-        if (((tok = next_token()) != T_RBRACK) && (tok != T_PLUS))
-            error("Expected '+' or ']', got %s", toktostr(tok));
-
-        if (tok == T_RBRACK) {
-            /* [numeric], [register], [label] checks out */
-            return op;
-        } else {
-            dcpu16token b = next_token();
-
-            op.type = REGISTER_OFFSET;
-
-            if (is_register(a)) {
-                /* [register + label], [register + numeric] */
-                if (b == T_IDENTIFIER) {
-                    op.register_offset.type = LABEL;
-                    op.register_offset.register_index = a;
-                    op.register_offset.label = get_label(cur_tok.string)->label;
-
-                } else if (b == T_NUMBER) {
-                    op.register_offset.type = LITERAL;
-                    op.register_offset.register_index = a;
-                    op.register_offset.offset = cur_tok.number;
-
-                } else {
-                    error("Expected numeric or label, got %s", toktostr(b));
-                }
-            } else {
-                /* [numeric + register], [label + register] */
-                if (is_register(b)) {
-                    op.register_offset.register_index = b;
-
-                    if (a == T_NUMBER) {
-                        op.register_offset.type = LITERAL;
-                        op.register_offset.offset = cur_tok.number;
-                    } else {
-                        op.register_offset.type = LABEL;
-                        op.register_offset.label =
-                            get_label(cur_tok.string)->label;
-                    }
-                } else  {
-                    error("Expected register, got %s", toktostr(b));
-                }
-            }
-
-            if (next_token() != T_RBRACK)
-                error("Expected ']'");
-        }
-    } else {
-        error("Expected register, label, numeric or '[', got %s",
-                toktostr(tok));
-    }
-
-    return op;
-}
-
-int uses_next_word(dcpu16operand *op) {
-    if (op->type == LITERAL) {
-        if (op->addressing == IMMEDIATE)
-            return op->numeric > 0x1f;
-        else
-            return 1;
-    } else if (op->type == REGISTER_OFFSET) {
-        return 1;
-    } else if (op->type == LABEL) {
-        /*
-         * TODO: Short label support
-         */
-        return 1;
-    } else {
-        return 0;
-    }
-}
-
-int instruction_length(dcpu16instruction *instr) {
-    if (is_nonbasic_instruction(instr->opcode))
-        return 1 + uses_next_word(&(instr->a));
-    else
-        return 1 + uses_next_word(&(instr->a)) + uses_next_word(&(instr->b));
-}
-
-void assemble_line() {
-start:
-    ;;
-    dcpu16token tok = next_token();
-
-    if (tok == T_COLON) {
-        /* Label definition */
-        if ((tok = next_token()) == T_IDENTIFIER) {
-            dcpu16label *l = get_label(cur_tok.string);
-
-            if (l->defined)
-                error("Redefinition of label '%s' (%04X -> %04X) forbidden",
-                        l->label, l->pc, pc);
-
-            l->pc = pc;
-            l->defined = 1;
-
-            goto start;
-        } else {
-            error("Expected label, got %s", toktostr(tok));
-        }
-    } else if (is_instruction(tok)) {
-        dcpu16instruction instr, *newinstr;
-
-        instr.opcode = tok;
-        instr.a = assemble_operand();
-
-        if (!is_nonbasic_instruction(tok)) {
-            if ((tok = next_token()) == T_COMMA) {
-                instr.b = assemble_operand();
-            } else {
-                error("Expected ',', got %s", toktostr(tok));
-            }
-        }
-
-        if ((tok = next_token()) != T_NEWLINE)
-            error("Expected EOL, got %s", toktostr(tok));
-
-        /*
-         * All tokens valid, store instructions, advance PC
-         */
-        newinstr = malloc(sizeof(dcpu16instruction));
-        memcpy(newinstr, &instr, sizeof(dcpu16instruction));
-
-        newinstr->pc = pc;
-        newinstr->line = curline;
-
-        list_push_back(instructions, newinstr);
-
-        pc += instruction_length(newinstr);
-
-    } else if (is_macro(tok)) {
-        if (tok == T_ORG) {
-            if ((tok = next_token()) == T_NUMBER) {
-                if (flag_paranoid && (cur_tok.number < pc)) {
-                    warning("new origin precedes old origin! "
-                            "This could cause already written code to be "
-                            "overriden.");
-                }
-
-                pc = cur_tok.number;
-            } else {
-                error("Expected numeric, got %s", toktostr(tok));
-            }
-        } else if (tok == T_DAT) {
-            /* All of the stuff we are about to read, neatly packed
-             * into words */
-            list_node *p = NULL;
-            list *data = list_create();
-
-            do {
-                if ((tok = next_token()) == T_STRING) {
-                    char *ptr = cur_tok.string;
-
-                    while (*ptr != '\0') {
-                        uint16_t *dat = malloc(sizeof(uint16_t));
-                        *dat = *ptr++;
-
-                        list_push_back(data, dat);
-                    }
-                } else if (tok == T_NUMBER) {
-                    uint16_t *dat = malloc(sizeof(uint16_t));
-                    *dat = cur_tok.number;
-
-                    list_push_back(data, dat);
-                } else {
-                    error("Expected string or numeric, got %s", toktostr(tok));
-                }
-
-                if ((tok = next_token()) == T_COMMA)
-                    continue;
-                else if (tok == T_NEWLINE)
-                    break;
-                else
-                    error("Expected ',' or EOL, got %s", toktostr(tok));
-            } while (1);
-
-            /*
-            ram[pc++] = cur_tok.number;
-            */
-            for (p = list_get_root(data); p != NULL; p = p->next) {
-                ram[pc++] = *((uint16_t*)p->data);
-            }
-
-            list_dispose(&data, &free);
-        }
-    } else if (tok == T_NEWLINE) {
-        return;
-    } else {
-        error("Expected label-definition or opcode, got %s", toktostr(tok));
-    }
-}
-
-int parse(list *lines) {
-    list_node *n;
-
-    for (n = list_get_root(lines); n != NULL; n = n->next) {
-        char *start = cur_pos = cur_line = n->data;
-        curline++;
-
-        assemble_line();        
-    }
-
-    return 0;
-}
-
-uint16_t read_numeric() {
-    unsigned int num;
-
-    if (!strncmp(cur_pos, "0x", 2))
-       sscanf(cur_pos, "0x%X", (unsigned int *)&num);
-    else if ((isdigit(*cur_pos)))
-       sscanf(cur_pos, "%d", (int *)&num);
-    else
-       error("Expected numeric, got '%s'", cur_pos);
-
-    while (isxdigit(*cur_pos) || (*cur_pos == 'x'))
-       cur_pos++;
-
-    if (num > 0xFFFF)
-        warning("Literal value %X too big (> 0xFFFF) -- will wrap around.",
-                num);
-
-    return num;
-}
-
-dcpu16token read_string() {
-    char chr;
-    int i = 0;
-
-    while (*cur_pos != '\"') {
-        if (*cur_pos == '\0') {
-           error("Expected '\"', got EOL");
-        } else if (*cur_pos == '\\') {
-            switch (*++cur_pos) {
-            case '\"': chr = '\"'; break;
-            case '\\': chr = '\\'; break;
-            case '\t': chr = '\t'; break;
-            case '\r': chr = '\r'; break;
-            default: error("Unknown escape character '%c'", *cur_pos);
-            }
-
-            cur_pos++;
-        } else {
-            chr = *cur_pos++;
-        }
-
-        if (i >= (sizeof(cur_tok.string) - 1))
-            break;
-
-        cur_tok.string[i++] = chr;
-    }
-
-    cur_pos++;
-    cur_tok.string[i] = '\0';
-
-    return T_STRING;
-}
-
-uint8_t parse_register(char reg) {
-    switch (toupper(reg)) {
-    case 'A': return T_A;
-    case 'B': return T_B;
-    case 'C': return T_C;
-    case 'X': return T_X;
-    case 'Y': return T_Y;
-    case 'Z': return T_Z;
-    case 'I': return T_I;
-    case 'J': return T_J;
-    default:
-        error("Expected 'A', 'B', 'C', 'X', 'Y', 'Z', 'I' or 'J', got '%c'",
-                reg);
-    }
-
-    /* Since this can't happen, just make the compiler shut up */
-    return 0xFF;
-}
-
-dcpu16token next_token() {
-#define return_(x) /*printf("%d:%s\n", curline, #x);*/ return x;
-    /* Skip all spaces TO the next token */
-    while (isspace(*cur_pos))
-        cur_pos++;
-
-    /* Test some operators */
-    switch (*cur_pos++) {
-    case '\0':
-    case '\n': return_(T_NEWLINE);
-    case ',': return_(T_COMMA);
-    case '[': return_(T_LBRACK);
-    case ']': return_(T_RBRACK);
-    case '+': return_(T_PLUS);
-    case ':': return_(T_COLON);
-    case '\"': return read_string(&cur_pos);
-    default: break;
-    }
-
-    cur_pos--;
-
-#define TRY(i) if (!strncasecmp(cur_pos, #i, strlen(#i))) {     \
-    if (!isalnum(*(cur_pos + strlen(#i)))) {                    \
-        cur_pos += strlen(#i);                                  \
-        return_(T_ ## i);                                       \
-    }                                                           \
-}
-
-#define TRYM(i) if (!strncasecmp(cur_pos, "." #i, strlen(#i) + 1)) { \
-    cur_pos += strlen(#i) + 1;                                       \
-    return_(T_ ## i);                                                \
-}
-
-    /* Try assembler pseudo instructions */
-    TRYM(ORG); TRYM(DAT);
-
-    /* Try instructions */
-    TRY(SET); TRY(ADD); TRY(SUB); TRY(MUL); TRY(DIV); TRY(MOD); TRY(SHL);
-    TRY(SHR); TRY(AND); TRY(BOR); TRY(XOR); TRY(IFE); TRY(IFN); TRY(IFG);
-    TRY(IFB); TRY(JSR);
-
-    /* Compatibility for other assemblers */
-    TRY(DAT); TRY(ORG);
-
-    /* And some "special" registers */
-    TRY(POP); TRY(PEEK); TRY(PUSH); TRY(SP); TRY(PC); TRY(O);
-
-#undef TRY
-#undef TRYM
-
-    if (isalpha(*cur_pos)) {
-        int strlength = 0;
-
-        /* Register or label */
-        while (isalnum(*cur_pos) || (*cur_pos == '_')) {
-            cur_pos++;
-            strlength++;
-        }
-
-        if (strlength > 1) {
-            strncpy(cur_tok.string, cur_pos - strlength, strlength);
-            cur_tok.string[strlength] = '\0';
-
-            return_(T_IDENTIFIER);
-        } else {
-            return parse_register(*(cur_pos - strlength));
-        }
-    } else if (isdigit(*cur_pos)) {
-        cur_tok.number = read_numeric();
-
-        return_(T_NUMBER);
-    }
-
-    error("Unrecognized input '%c'", *cur_pos);
-    return T_NEWLINE;
-#undef return_
-}
-
-void display_help() {
-    printf("Usage: dcpu16asm [OPTIOMS] [FILENAME]\n"
-           "where OPTIONS is any of:\n"
-           "  -h, --help          Display this help\n"
-           "  -b, --bigendian     Generate big endian code "
-                                 "rather than little endian\n"
-           "  -p, --paranoid      Turn on warnings about non-fatal (but "
-                                 "potentially harmful) problems\n"
-           "  -o FILENAME         Write output to FILENAME instead of "
-                                 "\"out.bin\"\n"
-           "\n"
-           "FILENAME, if given, is the source file to read instructions from.\n"
-           "Defaults to standard input if not given or filename is \"-\"\n");
-}

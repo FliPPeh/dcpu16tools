@@ -22,12 +22,12 @@ uint16_t swaps(uint16_t s) {
 }
 
 int write_hexdump(FILE *f, endianness_t dstend, uint16_t *mem, size_t msize) {
-    int i;
+    unsigned int i;
     uint16_t last[8] = {0};
     int skipping = 0;
 
     for (i = 0; i < msize;) {
-        int j = i, g = 0, r = 1;
+        unsigned int j = i, g = 0, r = 1;
 
         /* Check if this row of words is the same as the last row */
         for (g = 0; g < 8; ++g) {
@@ -125,20 +125,21 @@ int read_hexdump(FILE *f, endianness_t srcend, uint16_t *mem, size_t memsize) {
             SKIPX(p);
             SKIP(p);
             if (*p++ == ':') {
-                int i;
+                unsigned int i;
 
                 for (i = 0; i < 8; ++i) {
                     SKIP(p);
                     if (isxdigit(*p)) {
-                        int n;
+                        unsigned int n;
 
                         if ((offset + i) > memsize) {
                             return -1;
                         }
 
                         sscanf(p, "%04X", &n);
-                        if (n > 0xFFFF)
+                        if (n > 0xFFFF) {
                             exit(1);
+                        }
 
                         if (srcend != get_endianness())
                             n = swaps(n);
@@ -156,4 +157,6 @@ int read_hexdump(FILE *f, endianness_t srcend, uint16_t *mem, size_t memsize) {
             }
         }
     }
+    
+    return 0;
 }

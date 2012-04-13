@@ -24,8 +24,10 @@
 #include <string.h>
 #include <ncurses.h>
 #include <signal.h>
+#include <ctype.h>
+#include <unistd.h>
 
-#include "hexdump.h"
+#include "../common/hexdump.h"
 
 #define RAMSIZE 0x10000
 
@@ -106,8 +108,6 @@ int main(int argc, char **argv) {
     int i;
     int lopts_index = 0;
     FILE *source = stdin;
-    uint8_t *program = NULL;
-    int programsize = 0;
 
     static struct option lopts[] = {
         {"verbose",      no_argument, NULL, 'v'},
@@ -524,7 +524,7 @@ void emulate(dcpu16 *cpu) {
         for (b = 0; b < 16; b++)
                 init_pair(((f << 4) | b) + 16, f+127, b+127);
 
-    while (cpu->pc < RAMSIZE) {
+    for(;;) {
         if ((c = getch()) > 0) {
             switch (c) {
             case KEY_LEFT: c = 1; break;
@@ -618,7 +618,7 @@ void disassemble(dcpu16 *cpu) {
 
     dcpu16instr instr = {0};
 
-    while (cpu->pc < 0x10000) {
+    for (;;) {
         dcpu16_fetch(&instr, cpu);
         inspect_instruction(cpu, &instr);
     }
