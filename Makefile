@@ -1,4 +1,4 @@
-CFLAGS=-Wall -Wextra -std=c99 -g -I../common/
+CFLAGS=-Wall -Wextra -g -I../common/
 LDFLAGS=-lncurses
 
 export CFLAGS

@@ -102,6 +102,7 @@ typedef struct {
     uint16_t o;
 
     int skip_next;
+    int idle;
 } dcpu16;
 
 

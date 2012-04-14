@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "gui.h"
 #include "../common/hexdump.h"
@@ -33,6 +34,7 @@
 #include "../common/types.h"
 
 
+void _usleep(unsigned long);
 void dcpu16_init(dcpu16*);
 void dcpu16_step(dcpu16*);
 void dcpu16_fetch(dcpu16instruction*, dcpu16*);
@@ -148,6 +150,20 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+#define ONE_SECOND 1000000
+
+void _usleep(unsigned long us) {
+    struct timespec req = {0};
+    time_t sec = us / ONE_SECOND;
+    time_t usec = us - sec * ONE_SECOND;
+    req.tv_sec = sec;
+    req.tv_nsec = usec * 1000;
+
+    while (nanosleep(&req, &req) == -1)
+        continue;
+
+    return;
+}
 
 void display_help() {
     printf("Usage: dcpu16emu [OPTIONS] [FILENAME]\n"
@@ -257,6 +273,8 @@ void dcpu16_fetch(dcpu16instruction *instr, dcpu16 *cpu) {
 
 uint16_t load(dcpu16operand *op, dcpu16 *cpu, int *cost) {
 #define TOREG(r) ((r) - T_A)
+    *cost = 0;
+
     switch (op->type) {
     case REGISTER:
         if (op->addressing == IMMEDIATE) {
@@ -274,14 +292,22 @@ uint16_t load(dcpu16operand *op, dcpu16 *cpu, int *cost) {
         }
 
     case REGISTER_OFFSET:
+        *cost = 1;
         return cpu->ram[cpu->registers[TOREG(op->register_offset.register_index)]
                        + op->register_offset.offset];
 
     case LITERAL:
-        if (op->addressing == IMMEDIATE)
+        if (op->addressing == IMMEDIATE) {
+            if (op->numeric > 0x1f)
+                *cost = 1;
+
             return op->numeric;
-        else
+        } else {
+            *cost = 1;
             return cpu->ram[op->numeric];
+        }
+
+    default: break;
     }
 
     return 0;
@@ -290,8 +316,6 @@ uint16_t load(dcpu16operand *op, dcpu16 *cpu, int *cost) {
 
 void store(dcpu16operand *op, uint16_t val, dcpu16 *cpu) {
 #define TOREG(r) ((r) - T_A)
-    fprintf(stderr, "Store %04X to %d (%d)\n", val, op->token, op->type);
-
     switch (op->type) {
     case REGISTER:
         if (op->addressing == IMMEDIATE) {
@@ -322,6 +346,8 @@ void store(dcpu16operand *op, uint16_t val, dcpu16 *cpu) {
             cpu->ram[op->numeric] = val;
 
         break;
+
+    default: break;
     }
 
     return;
@@ -331,36 +357,37 @@ void store(dcpu16operand *op, uint16_t val, dcpu16 *cpu) {
 void dcpu16_execute(dcpu16instruction *instr, dcpu16 *cpu) {
     /* If any instruction tries to set a literal value, fail silently */
     uint16_t result;
-    int costa, costb;
+    int costa, costb, costi;
     uint16_t a = load(&(instr->a), cpu, &costa),
              b = load(&(instr->b), cpu, &costb);
 
-    fprintf(stderr, "%04X\n", instr->opcode);
-
     switch (instr->opcode) {
     case T_JSR:
-        fprintf("JUMP! %04X!\n", a);
         cpu->ram[--cpu->sp] = cpu->pc;
         cpu->pc = a;
         break;
 
     case T_SET:
         result = b;
+        costi = 1;
         break;
 
     case T_ADD:
         result = a + b;
         cpu->o = ((result < a) || (result < b));
+        costi = 2;
         break;
 
     case T_SUB:
         result = a - b;
         cpu->o = (result > a) ? 0xFFFF : 0;
+        costi = 2;
         break;
 
     case T_MUL:
         result = a * b;
         cpu->o = (result >> 16) & 0xFFFF;
+        costi = 2;
         break;
 
     case T_DIV:
@@ -372,53 +399,66 @@ void dcpu16_execute(dcpu16instruction *instr, dcpu16 *cpu) {
             cpu->o = 0;
         }
 
+        costi = 3;
+
         break;
 
     case T_MOD:
         result = (b != 0) ? (a % b) : 0;
+        costi = 3;
         break;
 
     case T_SHL:
         result = a << b;
         cpu->o = ((a << b) >> 16) & 0xFFFF;
+        costi = 2;
         break;
 
     case T_SHR:
         result = a >> b;
         cpu->o = ((a << 16) >> b) & 0xFFFF;
+        costi = 2;
         break;
 
     case T_AND:
         result = a & b;
+        costi = 1;
         break;
 
     case T_BOR:
         result = a | b;
+        costi = 1;
         break;
 
     case T_XOR:
         result = a ^ b;
+        costi = 1;
         break;
 
     case T_IFE:
         cpu->skip_next = !(a == b);
+        costi = 2 + cpu->skip_next;
         break;
 
     case T_IFN:
         cpu->skip_next =  (a == b);
+        costi = 2 + cpu->skip_next;
         break;
 
     case T_IFG:
         cpu->skip_next = !(a > b);
+        costi = 2 + cpu->skip_next;
         break;
     case T_IFB:
         cpu->skip_next =  (a & b) == 0;
+        costi = 2 + cpu->skip_next;
         break;
 
     default: return;
     }
 
-    fprintf(stderr, "Res %04X\n", result);
+    cpu->idle = costa + costb + costi;
+
     if (!is_nonbasic_instruction(instr->opcode) && 
         ((instr->opcode >= T_SET) && (instr->opcode <= T_XOR)))
             store(&(instr->a), result, cpu);
@@ -432,7 +472,7 @@ void dcpu16_step(dcpu16 *cpu) {
     if (!cpu->skip_next)
         dcpu16_execute(&instr, cpu);
     else
-        cpu->skip_next = 0;
+        cpu->skip_next = cpu->idle = 0;
 
 }
 
@@ -440,7 +480,6 @@ void emulate(dcpu16 *cpu) {
     uint16_t last_pc = 0xFFFF;
     uint16_t keybuffer = 0;
     int c;
-    int f,b;
 
     for(;;) {
         if ((c = getch()) > 0) {
@@ -460,17 +499,19 @@ void emulate(dcpu16 *cpu) {
             cpu->ram[0x9000 + (keybuffer++ % 0x1)] = c;
         }
 
-        dcpu16_step(cpu);
-        write_hexdump(stderr, BIGENDIAN, cpu->ram, RAMSIZE);
-        fprintf(stderr, "============== %04X =============\n", cpu->pc);
-        updategui(cpu);
+        if (!cpu->idle) {
+            dcpu16_step(cpu);
+            updategui(cpu);
 
-        /* Add clock cycles, then enable */
-        usleep(10);
+            if ((last_pc == cpu->pc) && flag_halt)
+                break;
 
-        if ((last_pc == cpu->pc) && flag_halt)
-            break;
+            last_pc = cpu->pc;
+        } else {
+            cpu->idle--;
+            fprintf(stderr, "IDLE, EXECUTING BEFORE %04X\n", cpu->pc);
+        }
 
-        last_pc = cpu->pc;
+        _usleep(10);
     }
 }
