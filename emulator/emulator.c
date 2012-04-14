@@ -311,8 +311,8 @@ void store(dcpu16operand *op, uint16_t val, dcpu16 *cpu) {
         break;
 
     case REGISTER_OFFSET:
-        cpu->ram[cpu->registers[TOREG(op->register_offset.register_index)] +
-                 cpu->ram[op->register_offset.offset]] = val;
+        cpu->ram[cpu->registers[TOREG(op->register_offset.register_index)]
+               + op->register_offset.offset] = val;
         break;
 
     case LITERAL:
