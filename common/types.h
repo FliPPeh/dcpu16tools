@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define RAMSIZE 0x10000
+
 /*
  * Tokens
  *
@@ -91,5 +93,16 @@ typedef struct {
     dcpu16operand a;
     dcpu16operand b;
 } dcpu16instruction;
+
+typedef struct {
+    uint16_t registers[8];
+    uint16_t ram[RAMSIZE];
+    uint16_t pc;
+    uint16_t sp;
+    uint16_t o;
+
+    int skip_next;
+} dcpu16;
+
 
 #endif
