@@ -1,4 +1,5 @@
 #include <signal.h>
+#include <ctype.h>
 #include <ncurses.h>
 
 #include "gui.h"
